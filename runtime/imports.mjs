@@ -152,8 +152,8 @@ export const makeProcStubs = () => {
   const proc = {
     spawn: () => 999, spawn_link: () => 999, spawn_opt: () => 999,
     send: (_p, m) => m, self: () => 1,
-    recv_has: () => 0, recv_cur: () => null, recv_remove: () => {}, recv_advance: () => {}, recv_wait: () => {},
-    exit: () => {}, set_trap_exit: () => {}, register: () => {}, whereis: () => 0,
+    recv_has: () => 0, recv_cur: () => null, recv_remove: () => {}, recv_advance: () => {}, recv_wait: () => {}, recv_wait_timeout: () => 0,
+    exit: () => {}, exit2: () => {}, set_trap_exit: () => {}, register: () => {}, whereis: () => 0,
     monitor: () => 1, demonitor: () => {}, alias_pid: (p) => p,
     pdict_get: (k) => (pdict.has(k) ? pdict.get(k) : null),
     pdict_put: (k, v) => { const old = pdict.has(k) ? pdict.get(k) : null; pdict.set(k, v); return old; },

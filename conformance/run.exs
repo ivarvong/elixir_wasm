@@ -436,6 +436,82 @@ defmodule Conf do
           %{fn: "self_eq", sig: {[:int], :int}, inputs: [[0]]},
           %{fn: "ref_neq", sig: {[:int], :int}, inputs: [[0]]}
         ]},
+      # ---- KILL: exit/2, kill-by-unwind of a parked process, link/monitor propagation ----
+      %{cat: "kill", proc: true, src: """
+        defmodule KillDemo do
+          # Process.exit/2 kills a non-trapping child; the monitor sees :DOWN with our reason.
+          def kill_parked(x) do
+            child = spawn(fn -> receive do _ -> :never end end)
+            ref = Process.monitor(child)
+            Process.exit(child, :boom)
+            receive do
+              {:DOWN, ^ref, :process, ^child, :boom} -> x * 2
+            end
+          end
+          # An abnormal exit propagates across a link to a trapping waiter as {:EXIT, pid, reason}.
+          def trap_signal(x) do
+            Process.flag(:trap_exit, true)
+            child = spawn_link(fn -> receive do _ -> :never end end)
+            Process.exit(child, :crash)
+            receive do
+              {:EXIT, ^child, :crash} -> x + 100
+            end
+          end
+          # Process.exit(pid, :normal) to another non-trapping process is a no-op — it stays alive.
+          def normal_noop(x) do
+            child = spawn(fn -> receive do {:ping, from} -> send(from, :pong) end end)
+            Process.exit(child, :normal)
+            send(child, {:ping, self()})
+            receive do :pong -> x end
+          end
+          # The real kill-by-UNWIND path: the target parks FIRST (a separate killer runs after it
+          # suspends), so the kill rejects its parked JSPI stack rather than a not-yet-started child.
+          def kill_after_park(x) do
+            a = spawn(fn -> receive do _ -> :never end end)
+            ref = Process.monitor(a)
+            spawn(fn -> Process.exit(a, :boom) end)
+            receive do
+              {:DOWN, ^ref, :process, ^a, :boom} -> x * 3
+            end
+          end
+        end
+        """, extra: [], cases: [
+          %{fn: "kill_parked", sig: {[:int], :int}, inputs: [[7]]},
+          %{fn: "trap_signal", sig: {[:int], :int}, inputs: [[5]]},
+          %{fn: "normal_noop", sig: {[:int], :int}, inputs: [[9]]},
+          %{fn: "kill_after_park", sig: {[:int], :int}, inputs: [[8]]}
+        ]},
+      # ---- receive ... after: finite timeout fires; a message beats the timer; after 0 polls/drains ----
+      %{cat: "recv-after", proc: true, src: """
+        defmodule RecvAfter do
+          # nothing ever sends :never -> the finite timer fires and the after-body runs.
+          def times_out(x) do
+            receive do :never -> 0 after 5 -> x * 2 end
+          end
+          # a message is already in the mailbox -> it wins, the 1000ms timer is cancelled.
+          def message_wins(x) do
+            send(self(), :go)
+            receive do :go -> x + 1 after 1000 -> 0 end
+          end
+          # after 0 on an empty mailbox returns immediately (no blocking).
+          def poll_empty(x) do
+            receive do _ -> 0 after 0 -> x end
+          end
+          # after 0 drains all pending messages, then returns once the mailbox is empty.
+          def drain(x) do
+            send(self(), 10); send(self(), 20)
+            do_drain(x)
+          end
+          defp do_drain(acc) do
+            receive do n -> do_drain(acc + n) after 0 -> acc end
+          end
+        end
+        """, extra: [], cases: [
+          %{fn: "times_out", sig: {[:int], :int}, inputs: [[6]]},
+          %{fn: "message_wins", sig: {[:int], :int}, inputs: [[6]]},
+          %{fn: "poll_empty", sig: {[:int], :int}, inputs: [[9]]},
+          %{fn: "drain", sig: {[:int], :int}, inputs: [[5]]}
+        ]},
       # ---- REAL `use GenServer` on the actual OTP stack (:gen_server/:gen/:proc_lib/:sys) ----
       %{cat: "real-genserver", proc: true,
         extra: [GenServer, Keyword, Enum, Process, :gen_server, :gen, :proc_lib, :sys, :lists, :maps],

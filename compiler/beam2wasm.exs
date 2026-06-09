@@ -2467,6 +2467,17 @@ defmodule Beam2Wasm do
         {:call_ext, _ar, {:extfunc, :erlang, :exit, 1}} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
         {:call_ext_last, _ar, {:extfunc, :erlang, :exit, 1}, _d} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
         {:call_ext_only, _ar, {:extfunc, :erlang, :exit, 1}} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
+        # exit/2 (Process.exit(pid, reason)): signal another process — the host unwinds a parked target
+        # (kill-by-unwind) or, if it traps_exit, delivers {:EXIT, from, reason}. Returns true (unlike
+        # exit/1, this one returns; tail forms return the value).
+        {ce, _ar, {:extfunc, :erlang, :exit, 2}} when ce in [:call_ext, :call_ext_only] ->
+          call = "(call $exit2_raw (struct.get $pid 0 (ref.cast (ref $pid) (local.get $x0))) (local.get $x1))"
+          if ce == :call_ext,
+            do: {[call, "(local.set $x0 (global.get $atom_true))"], false},
+            else: {[call, "(return (global.get $atom_true))"], true}
+        {:call_ext_last, _ar, {:extfunc, :erlang, :exit, 2}, _d} ->
+          {["(call $exit2_raw (struct.get $pid 0 (ref.cast (ref $pid) (local.get $x0))) (local.get $x1))",
+            "(return (global.get $atom_true))"], true}
         # process_flag(:trap_exit, v) — only flag we support; returns old value (assume false)
         {:call_ext, _ar, {:extfunc, :erlang, :process_flag, 2}} ->
           {["(call $set_trap_exit (ref.eq (local.get $x1) (global.get $atom_true)))",
@@ -2558,8 +2569,14 @@ defmodule Beam2Wasm do
         :remove_message -> {["(call $recv_remove)"], false}
         {:loop_rec_end, {:f, l}} -> {["(call $recv_advance)", jump.(l)], true}
         {:wait, {:f, l}} -> {["(call $recv_wait)", jump.(l)], true}
-        # receive…after: block for a message then re-scan (label l). The finite timeout is NOT yet
-        # honored (no timer) — correct for `after :infinity` and any path where a message arrives.
+        # receive…after N (finite literal): park up to N ms. recv_wait_timeout returns 1 if a message
+        # arrived (jump back to the receive scan at l) or 0 if the timer fired (fall through to the
+        # `timeout` opcode + the after-body). `after :infinity` lowers to :wait, and `after 0` emits no
+        # wait at all, so this clause only sees finite non-zero timeouts.
+        {:wait_timeout, {:f, l}, {:integer, ms}} ->
+          {["(if (call $recv_wait_timeout (i32.const #{ms})) (then #{jump.(l)}))"], false}
+        # variable/non-literal timeout: block (re-scan on any message). A finite runtime timeout value
+        # is not honored — a documented limitation; literal `after N` (the common form) is.
         {:wait_timeout, {:f, l}, _timeout} -> {["(call $recv_wait)", jump.(l)], true}
         :timeout -> {[], false}          # timeout-fired landing (unreached while we always block)
         {:timeout, _} -> {[], false}
@@ -3176,8 +3193,10 @@ defmodule Beam2Wasm do
       (import "proc" "recv_remove"  (func $recv_remove))
       (import "proc" "recv_advance" (func $recv_advance))
       (import "proc" "recv_wait"    (func $recv_wait))
+      (import "proc" "recv_wait_timeout" (func $recv_wait_timeout (param i32) (result i32)))
       (import "proc" "spawn_link"   (func $spawn_link_raw (param (ref null eq)) (result i32)))
       (import "proc" "exit"         (func $exit_raw (param (ref null eq))))
+      (import "proc" "exit2"        (func $exit2_raw (param i32) (param (ref null eq))))
       (import "proc" "set_trap_exit" (func $set_trap_exit (param i32)))
       (import "proc" "register"     (func $register_raw (param i32) (param i32)))
       (import "proc" "whereis"      (func $whereis_raw (param i32) (result i32)))
