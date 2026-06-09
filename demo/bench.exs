@@ -3,9 +3,11 @@
 # the same in-memory bytes). Reuses demo/_work/real.wasm + the fixture from a prior `elixir demo/run_real.exs`.
 Mix.install([{:req, "~> 0.5"}])
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Bench do
   @here Path.dirname(__ENV__.file)
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
+  @node Tooling.node!()
 
   def main do
     wasm = Path.join(@here, "_work/real.wasm")

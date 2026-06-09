@@ -10,13 +10,15 @@
 
 Mix.install([{:jason, "~> 1.4"}], consolidate_protocols: false)
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule JasonDecodeConf do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
   @driver Path.join(@here, "driver.mjs")
   @tmp Path.join(@here, "_work_jason_decode")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
 
   @src """
   defmodule JasonDecodeTarget do
@@ -97,7 +99,7 @@ defmodule JasonDecodeConf do
     casesf = Path.join(@tmp, "cases.json")
 
     File.write!(watf, wat)
-    {asm, 0} = System.cmd(@wasmas, [watf, "-o", wasmf, "-all"], stderr_to_stdout: true)
+    {asm, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf), stderr_to_stdout: true)
     if asm != "", do: IO.write(asm)
 
     cases = Enum.map(@jsons, fn json ->

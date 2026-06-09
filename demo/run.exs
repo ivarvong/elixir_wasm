@@ -4,12 +4,14 @@
 # identical input) ⇒ a compiler bug. The HTTP effect is captured ONCE and held constant across engines.
 Mix.install([{:req, "~> 0.5"}])
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Demo do
   @here Path.dirname(__ENV__.file)
   @root Path.expand("..", @here)
   @url "https://resy.com"
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
   # Resy reaches String/Enum/List; DCE keeps only what it touches.
   @extra [Enum, String, List, Integer, Map, Keyword, Range, :lists, :maps, :binary, :unicode]
 
@@ -46,7 +48,7 @@ defmodule Demo do
     cmd = "elixir #{inspect(b2w)} #{Enum.map_join([bf | extra], " ", &inspect/1)} > #{inspect(wat)} 2> #{inspect(stub)}"
     {_, 0} = System.shell(cmd, env: [{"EXPORTS", "run:->bin"}, {"STUB", "1"}, {"BIGNUM", "1"}])
     IO.puts("→ compiled Resy → WasmGC (#{Regex.run(~r/STUBS: \d+/, File.read!(stub)) |> List.first()})")
-    {_, 0} = System.cmd(@wasmas, [wat, "-o", wasm, "-all", "--disable-custom-descriptors", "-g"], stderr_to_stdout: true)
+    {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(wat, wasm, ["-g"]), stderr_to_stdout: true)
     wasm
   end
 

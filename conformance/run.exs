@@ -8,14 +8,16 @@
 #
 # Arg/result types bridged: int | bool | atom | bin(string) | list(of ints).
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Conf do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
   @driver Path.join(@here, "driver.mjs")
   @runproc Path.join(@here, "../runtime/scheduler.mjs")
   @tmp Path.join(@here, "_work")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
 
   # ---- corpus ----
   # %{cat, mod_src, extra: [Module,...], cases: [%{fn, sig: {[argtype], rettype}, inputs: [[..],..]}]}
@@ -594,7 +596,7 @@ defmodule Conf do
         watf = Path.join(@tmp, "#{mod}.wat")
         wasmf = Path.join(@tmp, "#{mod}.wasm")
         File.write!(watf, wat)
-        {_, 0} = System.cmd(@wasmas, [watf, "-o", wasmf, "-all"], stderr_to_stdout: true)
+        {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf), stderr_to_stdout: true)
 
         if proc do
           # process programs: each case runs in a fresh JSPI scheduler (int args only)

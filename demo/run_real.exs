@@ -4,12 +4,14 @@
 # whole response decode — runs on WasmGC. Diff vs the VM (also real Req, adapter stubbed to the same body).
 Mix.install([{:req, "~> 0.5"}])
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule RunReal do
   @here Path.dirname(__ENV__.file)
   @root Path.expand("..", @here)
   @url "https://resy.com"
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
 
   def main do
     File.mkdir_p!(Path.join(@here, "_work"))
@@ -55,7 +57,7 @@ defmodule RunReal do
     log = File.read!(stub)
     IO.puts("→ compiled real Req → WasmGC  (#{Regex.run(~r/DCE: kept \d+ of \d+ functions/, log) |> List.first()}; " <>
             "#{Regex.run(~r/STUBS: \d+/, log) |> List.first()})")
-    {_, 0} = System.cmd(@wasmas, [wat, "-o", wasm, "-all", "--disable-custom-descriptors", "-g"], stderr_to_stdout: true)
+    {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(wat, wasm, ["-g"]), stderr_to_stdout: true)
     wasm
   end
 end

@@ -14,13 +14,15 @@
 #   elixir scaling.exs map        # only probes whose key matches the filter
 Code.require_file("jason0.exs", __DIR__)
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Scaling do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
   @scaler Path.join(@here, "scaling.mjs")
   @tmp Path.join(@here, "_work")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
   @reps 300
 
   @src """
@@ -142,7 +144,7 @@ defmodule Scaling do
     stubf = Path.join(@tmp, "scale.stubs.txt")
     cmd = "elixir #{inspect(@beam2wasm)} #{Enum.map_join(beams ++ extra, " ", &inspect/1)} > #{inspect(watf)} 2> #{inspect(stubf)}"
     {_, 0} = System.shell(cmd, env: [{"EXPORTS", exports}, {"STUB", "1"}, {"BIGNUM", "1"}])
-    {_, 0} = System.cmd(@wasmas, [watf, "-o", wasmf, "-all", "-g"], stderr_to_stdout: true)
+    {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf, ["-g"]), stderr_to_stdout: true)
     wasmf
   end
 

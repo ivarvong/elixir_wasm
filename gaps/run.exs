@@ -9,6 +9,8 @@
 #
 # Reports, per program: reachable STUBS (compiler's own "unsupported but reachable" meter, 0 = provably
 # supported) and seeds passed/total (bit-exact vs the VM). FAIL/TRAP/BUILD_ERR localize the gap.
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Gaps do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
@@ -16,8 +18,8 @@ defmodule Gaps do
   @runner Path.join(@here, "runner.mjs")
   @runproc Path.join(@here, "../runtime/scheduler.mjs")
   @tmp Path.join(@here, "_work")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
   # A generous default stdlib surface; DCE keeps only what each program reaches.
   # NB: do NOT include Erlang modules the compiler already shims (:math/:binary/:unicode/:string/:erlang)
   # — that double-defines functions. Their BIFs come in via host imports / builtins.
@@ -133,7 +135,7 @@ defmodule Gaps do
     else
       # -all enables every feature, but its custom-descriptors emits `exact` heap types that Node 24
       # rejects without a flag; we don't use RTTs, so disable it to keep output runnable on stock Node.
-      case System.cmd(@wasmas, [watf, "-o", wasmf, "-all", "--disable-custom-descriptors", "-g"], stderr_to_stdout: true) do
+      case System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf, ["-g"]), stderr_to_stdout: true) do
         {_, 0} -> {wasmf, watf, stubs, names, nil}
         {err, _} -> {wasmf, watf, stubs, names, "wasm-as: " <> String.slice(err, 0, 60)}
       end

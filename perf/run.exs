@@ -9,14 +9,16 @@
 #   elixir run.exs --baseline      # diff current vs perf/baseline.json (regression gate)
 Code.require_file("jason0.exs", __DIR__)
 
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Perf do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
   @measure Path.join(@here, "measure.mjs")
   @tmp Path.join(@here, "_work")
   @baseline Path.join(@here, "baseline.json")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
   @iters 1500
   @trials 12
 
@@ -84,7 +86,7 @@ defmodule Perf do
       _ -> :ok
     end
     # -g keeps the name section so the V8 profile shows int_mul/term_compare/Ledger.run, not wasm-function[N].
-    {_, 0} = System.cmd(@wasmas, [watf, "-o", wasmf, "-all", "-g"], stderr_to_stdout: true)
+    {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf, ["-g"]), stderr_to_stdout: true)
     casesf = Path.join(@tmp, "#{mod}.cases.json")
     File.write!(casesf, Jason0.encode(w.cases))
     {wasmf, casesf, mod}

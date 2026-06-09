@@ -10,14 +10,16 @@
 #   elixir run.exs 200000          # also append a heavy run at nops=200000
 #
 # On any mismatch it bisects nops to report the FIRST op count where Wasm and the VM diverge.
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Fuzz do
   @here Path.dirname(__ENV__.file)
   @beam2wasm Path.join(@here, "../compiler/beam2wasm.exs")
   @driver Path.join(@here, "../conformance/driver.mjs")
   @src Path.join(@here, "ledger.ex")
   @tmp Path.join(@here, "_work")
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
-  @wasmas System.find_executable("wasm-as") || "/opt/homebrew/bin/wasm-as"
+  @node Tooling.node!()
+  @wasmas Tooling.wasmas!()
   @extra [Map, Enum, Keyword, :lists, :maps]
 
   # build the .wasm once; returns the wasm file path. Asserts 0 reachable stubs.
@@ -48,7 +50,7 @@ defmodule Fuzz do
       IO.puts("  ⚠️  STUBS PRESENT — the program is NOT provably supported. Report:\n#{stub_report}")
     end
 
-    {_, 0} = System.cmd(@wasmas, [watf, "-o", wasmf, "-all"], stderr_to_stdout: true)
+    {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf), stderr_to_stdout: true)
     IO.puts("  binary:  #{File.stat!(wasmf).size} bytes .wasm\n")
     {wasmf, mod}
   end

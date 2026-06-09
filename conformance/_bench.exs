@@ -2,8 +2,10 @@
 # loaded Target module so Wasm and BEAM are measured the SAME way. Reports both TIME (median us/op)
 # and ALLOCATION (bytes/op) — Wasm allocation via perf/alloc.mjs (--trace-gc), BEAM allocation via
 # GC-reclaimed words (≈ allocated, steady state). Gated by BENCH=1.
+Code.require_file("../tooling.exs", __DIR__)
+
 defmodule Bench do
-  @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
+  @node Tooling.node!()
   @perf Path.join(Path.dirname(__ENV__.file), "../perf")
   @iters 1000
   @trials 11
