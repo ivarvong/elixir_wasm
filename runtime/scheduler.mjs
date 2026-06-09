@@ -6,6 +6,7 @@
 // resets the budget (set_reds) before each dispatch — BEAM's "fresh reductions per schedule".
 //   node --experimental-wasm-jspi scheduler.mjs <wasm> <entry> [intargs...]
 import fs from "node:fs";
+import { makeBig, makeMath, makeStr } from "./imports.mjs";
 const [wasmPath, entry, ...intArgs] = process.argv.slice(2);
 const args = intArgs.map(Number);
 const BUDGET = 2000;                 // reductions per dispatch (matches the compiler default)
@@ -60,22 +61,13 @@ const imports = {
   sched: {
     yield: new WebAssembly.Suspending(() => new Promise((res) => { const p = P(); p.status = "ready"; p.resolve = res; toReady.push(current); })),
   },
-  // bignum (host BigInt) + floats (libm) — provided unconditionally; unused imports are ignored.
-  big: { from_i64: x => x, from_str: x => BigInt(String(x)), add: (a, b) => a + b, sub: (a, b) => a - b, mul: (a, b) => a * b,
-    div: (a, b) => a / b, rem: (a, b) => a % b,
-    band: (a, b) => a & b, bor: (a, b) => a | b, bxor: (a, b) => a ^ b,
-    bsl: (a, b) => b >= 0n ? a << b : a >> -b, bsr: (a, b) => b >= 0n ? a >> b : a << -b,
-    fits_i31: a => (a >= -1073741824n && a < 1073741824n) ? 1 : 0, to_i32: a => Number(a), cmp: (a, b) => a < b ? -1 : a > b ? 1 : 0, bit_length: a => a === 0n ? 0 : a.toString(2).length, to_f64: a => Number(a),
-    fits_i64: a => (a >= -9223372036854775808n && a <= 9223372036854775807n) ? 1 : 0, to_i64: a => BigInt.asIntN(64, a) },
-  math: Object.fromEntries(["sin","cos","tan","asin","acos","atan","sqrt","exp","log","log2","log10","sinh","cosh","tanh","ceil","floor","atan2","pow"].map(k => [k, Math[k]])),
-  // String case mapping (genuinely Unicode-table-backed) -> host. Reads/writes the $binary via
-  // the exported bin_* helpers (instance is assigned just below; the closures run after that).
-  str: {
-    upcase: b => { const u = new TextEncoder().encode(strRd(b).toUpperCase()); const o = instance.exports.bin_alloc(u.length); u.forEach((c, i) => instance.exports.bin_put(o, i, c)); return o; },
-    downcase: b => { const u = new TextEncoder().encode(strRd(b).toLowerCase()); const o = instance.exports.bin_alloc(u.length); u.forEach((c, i) => instance.exports.bin_put(o, i, c)); return o; },
-  },
+  // bignum (host BigInt), floats (libm), and string/regex shims come from the shared import
+  // library — one source of truth across all runners. str resolves the exports lazily (the
+  // instance is created just below; the str closures only run during Wasm execution).
+  big: makeBig(),
+  math: makeMath(),
+  str: makeStr(() => instance.exports),
 };
-const strRd = b => { const n = instance.exports.bin_len(b); const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = instance.exports.bin_get(b, i); return new TextDecoder().decode(u); };
 
 const instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), imports);
 const startProcess = WebAssembly.promising(instance.exports.start_process);
