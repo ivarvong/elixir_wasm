@@ -3714,7 +3714,7 @@ defmodule Beam2Wasm do
     if Process.get(:stub), do: "(ref.null none)", else: raise("materialize: #{inspect(other)}")
   end
 
-  defp int_literal(n) when n >= -1_073_741_824 and n < 1_073_741_824, do: "(ref.i31 (i32.const #{n}))"
+  defp int_literal(n) when n >= @i31_lo and n <= @i31_hi, do: "(ref.i31 (i32.const #{n}))"
   defp int_literal(n) do
     cond do
       not Process.get(:bignum) -> "(ref.i31 (i32.const #{n}))"
