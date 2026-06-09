@@ -2361,7 +2361,7 @@ defmodule Beam2Wasm do
                "(local.set $bdst (array.new_default $bytes (local.get $blen)))",
                "(array.copy $bytes $bytes (local.get $bdst) (i32.const 0) (local.get $bsrc) (local.get $boff) (local.get $blen))",
                set.(dst, "(struct.new $binary (ref.as_non_null (local.get $bdst)))")]
-            other -> raise "bs_match cmd: #{inspect(other)}"
+            other -> raise "bs_match cmd in #{mod}.#{name}/#{arity}: #{inspect(other)} (unsupported bitstring match; set STUB=1 to compile this to a trap and continue)"
           end)
           {setup ++ lines, false}
         {:badmatch, _} -> {["(unreachable)"], true}
@@ -2632,7 +2632,7 @@ defmodule Beam2Wasm do
             Process.put(:stubs, (Process.get(:stubs) || 0) + 1)
             {["(unreachable) ;; STUB #{tag}"], true}
           else
-            raise "unhandled in #{name}/#{arity}: #{inspect(other)}"
+            raise "unhandled opcode in #{mod}.#{name}/#{arity}: #{inspect(other)} (set STUB=1 to compile this to a trap and continue)"
           end
       end
     end
@@ -2741,7 +2741,17 @@ defmodule Beam2Wasm do
   defp operand({:atom, a}), do: "(global.get $atom_#{sanitize(a)})"
   defp operand({:literal, term}), do: materialize(term)
   defp operand(o) do
-    if Process.get(:stub), do: "(ref.null none)", else: raise("operand: #{inspect(o)}")
+    if Process.get(:stub) do
+      # Unknown operand SHAPE under STUB mode: emit a trap and COUNT it, exactly like an
+      # opcode-level stub. Never emit a usable nil (the old "(ref.null none)") — that would
+      # flow on as a silent wrong value, turning a miscompile into a lie instead of an honest
+      # trap (and it would not increment the STUBS meter, so it'd hide as "0 stubs"). The
+      # block comment is inert; a ;; line comment would swallow the enclosing expression.
+      Process.put(:stubs, (Process.get(:stubs) || 0) + 1)
+      "(unreachable) (; STUB operand ;)"
+    else
+      raise "operand: #{inspect(o)} — unsupported operand shape (set STUB=1 to trap+count instead)"
+    end
   end
 
   # ── type-driven specialization, from beam_disasm's typed registers ──
