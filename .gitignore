@@ -1,0 +1,20 @@
+# Generated harness artifacts
+_work/
+_work*/
+**/_work/
+**/_work*/
+
+# Build artifacts
+*.beam
+*.wasm
+*.wat
+*.cpuprofile
+
+# Dependencies
+node_modules/
+
+# Elixir
+/_build/
+/deps/
+*.ez
+erl_crash.dump

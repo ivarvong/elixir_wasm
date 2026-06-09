@@ -1,0 +1,15 @@
+{
+  "name": "portfolio-genserver-do",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "PORTFOLIOS", "class_name": "PortfolioObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PortfolioObject"] }],
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

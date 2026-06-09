@@ -1,0 +1,15 @@
+{
+  "name": "durable-object",
+  "version": "1.0.0",
+  "description": "This closes the loop: the Elixir state machine in `account.ex` is compiled to WasmGC by `beam2wasm.exs` (via OTP's `:beam_disasm`), then **instantiated inside a Cloudflare Durable Object and run on `workerd`** — the actual target runtime — with state in durable (disk-backed) DO storage.",
+  "main": "worker.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "workerd": "^1.20260607.1"
+  }
+}

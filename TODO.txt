@@ -1,0 +1,466 @@
+================================================================================
+TODO.txt — handoff work list for elixir_wasm
+Written 2026-06-09 after a full project review. This file is the ONLY transfer
+document: it assumes you have the repo and nothing else. Read section 0 first;
+it tells you how to prove any change you make is safe.
+================================================================================
+
+--------------------------------------------------------------------------------
+0. CONTEXT YOU NEED BEFORE TOUCHING ANYTHING
+--------------------------------------------------------------------------------
+
+WHAT THIS REPO IS
+  An AOT compiler from Elixir (.beam bytecode, via OTP's :beam_disasm) to
+  WebAssembly GC, plus a JSPI-based process runtime, targeting Cloudflare
+  Workers / Durable Objects. The compiler is ONE file:
+      compiler/beam2wasm.exs        (~3,711 lines, Elixir script)
+  The process runtime is ONE file:
+      runtime/scheduler.mjs         (~148 lines, Node ESM)
+  Everything else is harnesses, demos, spikes, and docs.
+
+TOOLCHAIN (exact versions matter)
+  - Elixir + OTP (recent stable; the harnesses load OTP's own :gen_server etc.)
+  - Node.js v24.16.0 — JSPI is experimental and version-sensitive. All Wasm
+    runs need:  node --experimental-wasm-jspi
+  - Binaryen wasm-as version_130 (compiles .wat -> .wasm; needs -all flag)
+  - workerd (only for the durable-object demos)
+  See BUILD.md for install steps. NOTE: the harnesses currently default the
+  node path to /Users/ivar/.nvm/... — override with:  export NODE=$(which node)
+  (Fixing that default is TODO 2.)
+
+THE SAFETY NET — run these after EVERY change, no exceptions
+  All three are differential tests: the same Elixir source runs on WasmGC and
+  on the real Elixir VM, and outputs must match bit-exactly. They are the
+  reason this project can claim correctness. A change is done only when all
+  three are green.
+
+    cd conformance && elixir run.exs       # 131 cases, expect 131/131 (100.0%)
+    cd fuzz        && elixir run.exs       # 33 cases,  expect 33/33
+    cd gaps        && elixir run.exs       # 20 programs x 8 seeds; expect
+                                           # 8 "provably correct", 0 LIES
+                                           # (many TRAP/STUB results are
+                                           # expected — those are known gaps,
+                                           # not regressions. A regression =
+                                           # a previously-passing program now
+                                           # failing, or any LIE.)
+
+  Filter forms: `elixir run.exs binaries` (conformance, category substring),
+  `elixir run.exs p14` (gaps, program filter).
+
+HOW TO COMPILE ONE PROGRAM BY HAND (for debugging)
+    cd compiler
+    elixirc examples/mergesort.ex                      # -> Elixir.Sort.beam
+    elixir beam2wasm.exs Elixir.Sort.beam > sort.wat
+    wasm-as sort.wat -o sort.wasm -all
+    node --experimental-wasm-jspi examples/runsort.mjs sort.wasm
+
+COMPILER ENV FLAGS (read compiler/beam2wasm.exs lines ~40-60)
+  BIGNUM=0   opt OUT of exact integers (wrapping i31 mode; experiments only —
+             exact/tiered integers are the DEFAULT, despite what old docs say)
+  STUB=1     unknown opcodes/functions compile to traps + a "; STUB" comment
+             in the WAT instead of failing the build (the gaps harness uses
+             this to measure coverage)
+  REDS=<n>   inject reduction-count preemption checks at function entries
+  EXPORTS=.. control which functions are exported
+
+--------------------------------------------------------------------------------
+0.5 FALSE ALARMS — THINGS THAT LOOK LIKE BUGS BUT ARE NOT. DO NOT "FIX" THESE.
+--------------------------------------------------------------------------------
+
+(Both were flagged during review and then disproven against the source. Left
+here so the next reviewer doesn't burn a day on them.)
+
+A) "Bignum equality is broken / $term_compare has no $big case."
+   FALSE. compiler/beam2wasm.exs:1882-1885 — rank 0 (numbers) dispatches to
+   $int_cmp when bignum mode is on, and $int_cmp (see ~line 816) calls the
+   host import big.cmp ($bigint_cmp, imported at ~line 683) for boxed values.
+   Equality of two distinct-but-equal $big structs is value-correct via that
+   path. The i31/i31 fast path at lines 1864-1866 only fires when BOTH
+   operands are i31, so it never short-circuits a mixed i31/$big compare.
+   Covered by conformance category "bignum" and the fuzz ledger.
+
+B) "Integer arithmetic silently truncates to i32 by default."
+   FALSE. Exact integers are the default: beam2wasm.exs:53-55,
+   `bignum = System.get_env("BIGNUM") != "0"`. Wrapping arithmetic only
+   happens if you explicitly set BIGNUM=0, which the comment marks as
+   experiments-only. (Old docs describing BIGNUM as "opt-in" are stale —
+   that's TODO 1.)
+
+--------------------------------------------------------------------------------
+TODO 1 — DOCUMENTATION PASS (highest value; ~half a day; zero code risk)
+--------------------------------------------------------------------------------
+
+WHY: This repo's stated purpose (README "Provenance" section) is to be a
+due-diligence package a skeptical reviewer can trust. The code has advanced
+far past the docs; today the docs MISDESCRIBE the system in places. Anyone
+evaluating the project from the docs will both underestimate it and learn
+wrong facts.
+
+SPECIFIC FIXES (each verified against source on 2026-06-09):
+
+1.1  ARCHITECTURE.md line ~98 (term representation table) says maps are
+     "(struct $map (field (ref $kv))) wrapping a flat [k0,v0,...] mutable
+     array". WRONG since the map rewrite: maps are a PERSISTENT
+     WEIGHT-BALANCED BST (Adams' algorithm). Evidence: $mnode struct
+     (key/val/left/right/size) at beam2wasm.exs:272-275; rotation/balance
+     helpers $msz/$mrotL/$mrotR around lines 473-540. Get/put are O(log n).
+     Update the table row and add a sentence on the BST. perf/README.md has
+     the before/after numbers (bulk map build went from O(n^2) to ~O(n log n),
+     168x faster at 10k keys) — cite them.
+
+1.2  ARCHITECTURE.md line ~119 says the compiler is "single file, ~320
+     lines". It is 3,711 lines. Either update the number or drop the claim.
+
+1.3  ARCHITECTURE.md line ~110 and compiler/README.md (~line 143, "Two
+     opt-in modes") describe BIGNUM as an opt-in mode whose default "should
+     be" exact. Exact IS the default now (beam2wasm.exs:53-55). Rewrite both
+     passages: default = exact tiered integers (i31 -> $i64 -> host BigInt),
+     BIGNUM=0 is the experiments-only opt-out. Mention the THREE-tier design
+     (i31 unboxed / $i64 struct for 64-bit-fitting / host BigInt beyond).
+
+1.4  compiler/README.md (~line 122) says "Maps are flat (O(n)
+     lookup/update)". Stale — same fix as 1.1.
+
+1.5  README.md "Read in this order" lists 7 items but omits the strongest
+     evidence in the repo. Add entries (with one-line descriptions) for:
+       - conformance/  131-case differential suite vs the real VM, 100%
+                       bit-exact, incl. real OTP :gen_server/:supervisor
+       - runtime/      the JSPI scheduler: spawn/send/selective receive,
+                       links, monitors, trap_exit, preemption
+       - fuzz/         differential fuzzer (random ledger ops); found and
+                       fixed 3 real compiler bugs (see fuzz/FINDINGS.md)
+       - gaps/         20 realistic programs; enumerates the unsupported
+                       stdlib surface; 0 wrong-answer results ever
+       - perf/         attribution + scaling harnesses (found the map
+                       O(n^2), the bignum-boundary tax, etc.)
+       - interp/       a BEAM interpreter, itself compiled by this compiler,
+                       that runs uncompiled .beam as data (hot-reload seed)
+       - jason-demo/   real unmodified Jason 1.4.5 encoding bit-exact
+       - demo/         real unmodified Req (HTTP client) + :crypto running
+       - durable-genserver/  GenServer state surviving DO restart (the
+                       product thesis, demonstrated)
+
+1.6  README.md "Status at a glance" table: add a conformance row
+     ("131/131 bit-exact vs the VM") — it's the single best trust signal
+     and currently absent.
+
+1.7  ROADMAP.md: mark as DONE (they are implemented and conformance-tested):
+     exceptions via Wasm EH/try_table; binaries/bitstrings (byte-aligned);
+     closures + call_fun; multi-module namespacing; tiered bignum
+     comparisons; function-level DCE; links/monitors/trap_exit/supervisor
+     restart; preemption (measured in measurements/02-preemption.md). Keep
+     OPEN: receive-after timers, per-process run-queue fairness, explicit
+     kill in the real scheduler (TODO 4), cross-isolate ETF messaging,
+     protocols/Stream/Regex/:sets/non-byte-aligned bitstrings (see
+     gaps/FINDINGS.md for the authoritative gap list), real-Cloudflare
+     measurements.
+
+VERIFY: no code changes — but reread each edited claim against the cited
+source line before committing. Do not introduce new numbers without running
+the harness that produces them.
+
+--------------------------------------------------------------------------------
+TODO 2 — DE-HARDCODE TOOLCHAIN PATHS + ALIGN wasm-as FLAGS (~1-2 hours)
+--------------------------------------------------------------------------------
+
+WHY: A fresh clone on any other machine fails confusingly. Also one harness
+learned a wasm-as compatibility lesson the others didn't get.
+
+2.1  Node path default is this machine's nvm install, in THREE places:
+       conformance/run.exs:17   fuzz/run.exs:19   gaps/run.exs:19
+     all read:
+       @node System.get_env("NODE", "/Users/ivar/.nvm/versions/node/v24.16.0/bin/node")
+     CHANGE to: try $NODE, then System.find_executable("node"), and if the
+     result is missing or `node --version` is not v24.x, fail fast with a
+     message saying Node 24 + --experimental-wasm-jspi is required and to
+     set NODE=/path/to/node. (Do NOT silently accept any node: JSPI flag
+     semantics differ across major versions.)
+
+2.2  wasm-as flag drift:
+       gaps/run.exs:136 uses:  -all --disable-custom-descriptors -g
+       conformance/run.exs:597 and fuzz/run.exs:51 use:  -all   only
+     The --disable-custom-descriptors flag exists because newer Binaryen
+     with -all emits "exact" heap types (custom-descriptors feature) that
+     stock Node 24 REJECTS at instantiation. gaps/ hit this; the others
+     just haven't yet because of binaryen version luck. Add
+     --disable-custom-descriptors to the conformance and fuzz invocations
+     too. (-g is debug names; optional, harmless.)
+
+2.3  While in there: @wasmas fallback "/opt/homebrew/bin/wasm-as" is
+     macOS-only; fine as a fallback but make the not-found error name the
+     binaryen version expected (version_130, per BUILD.md).
+
+VERIFY: unset NODE; run all three harnesses (section 0) — same pass counts
+as before. Then sanity-check the failure path: NODE=/bin/false elixir
+run.exs should produce your new clear error, not a stacktrace.
+
+--------------------------------------------------------------------------------
+TODO 3 — SHARED HOST-IMPORT LIBRARY (~half a day)
+--------------------------------------------------------------------------------
+
+WHY: The JS import objects the Wasm modules need ("big", "math", "str",
+"proc", "sched", plus demo-only "http"/"crypto") are COPY-PASTED across at
+least 7 runner files. "big" and "math" are currently in sync (verified
+byte-equivalent in review), but "str" has ALREADY diverged — i.e. the drift
+this causes is not hypothetical:
+
+  runtime/scheduler.mjs:73-76   str = { upcase, downcase }            ONLY
+  conformance/driver.mjs        str = { upcase, downcase }            ONLY
+  demo/runner.mjs:53-59         str = { upcase, downcase, re_split,
+                                        re_run, titlecase }
+  gaps/runner.mjs:42-43         str = { upcase, downcase, re_split,
+                                        re_run, titlecase, upchar }
+
+CONSEQUENCE: a module compiled from code that touches Regex/String.split
+(e.g. anything Req-shaped) instantiates fine under demo/runner.mjs but
+FAILS LINK under runtime/scheduler.mjs — the canonical scheduler is the
+runner with the smallest import surface.
+
+TASK:
+3.1  Create runtime/imports.mjs exporting factory functions:
+       makeBig(), makeMath(), makeStr(getInstance), makeCrypto()
+     ("str" needs the instance for bin_alloc/bin_put, and the instance is
+     created after the import object — every runner already solves this
+     with a late-bound `instance` variable / getter closure; keep that
+     pattern: pass a () => instance getter into makeStr.)
+     Use the RICHEST existing variant of each module as the source of
+     truth: str from gaps/runner.mjs:42-43 (it has everything incl.
+     upchar), big/math from any (identical), crypto from demo/runner.mjs.
+3.2  Convert runtime/scheduler.mjs, conformance/driver.mjs,
+     demo/runner.mjs, demo/bench.mjs, gaps/runner.mjs to import from it.
+     Leave compiler/work/*.mjs alone (dead experiments, not worth it).
+     Keep "proc"/"sched" in scheduler.mjs (they ARE the scheduler) — but
+     demo/runner.mjs's stub proc/sched (returns fake pid 999 etc., lines
+     ~77-86) can move to imports.mjs as makeProcStubs() since bench.mjs
+     duplicates it.
+3.3  Note: unused imports in an import object are harmless — a runner
+     passing the full "str" to a module that only imports upcase is fine.
+     So all runners can just take the full surface.
+
+VERIFY: all three harnesses green (section 0), plus:
+  cd demo && node --experimental-wasm-jspi runner.mjs   (Req demo)
+  cd jason-demo && (see its README) if it has its own runner.
+Grep afterwards to prove the dedup:  grep -rn "fits_i31" --include=*.mjs .
+should hit only imports.mjs (and compiler/work/, ignored).
+
+--------------------------------------------------------------------------------
+TODO 4 — SCHEDULER: KILL-BY-UNWIND, FAIRNESS, RECEIVE TIMEOUTS (~2-4 days)
+--------------------------------------------------------------------------------
+
+WHY: ARCHITECTURE.md section 9 mandates "terminate processes by UNWINDING,
+never by dropping references" — because an abandoned suspended JSPI stack is
+engine-rooted and LEAKS (~41MB/gen measured in
+spikes/01-jspi-economics/spikeB.mjs, which also proved the reject-the-
+parked-promise kill path works and plateaus). The real scheduler
+(runtime/scheduler.mjs) does NOT implement that kill path: a process today
+only ends by returning or throwing on its own. This is the one place the
+architecture document promises something the shipped runtime doesn't do.
+ROADMAP also calls scheduler fairness "the single most important remaining
+runtime component".
+
+CURRENT STATE (runtime/scheduler.mjs, 148 lines — read all of it first,
+it's small and dense):
+  - Three queues: toStart (new spawns), toResume (got a message while
+    waiting), toReady (preempted/yielded). Dispatch loop at lines 138-140
+    drains toStart FULLY before toResume before toReady -> a spawn-heavy
+    process starves everyone else.
+  - Parking: proc.recv_wait and sched.yield are WebAssembly.Suspending
+    imports that create a Promise and stash its `resolve` on the process
+    record (p.resolve). Resuming = calling p.resolve().
+  - NO p.reject is stashed -> nothing can unwind a parked stack.
+  - finish(pid, ok) at lines ~91-117 handles links (trap_exit ->
+    {:EXIT,...} message; abnormal + no trap -> recursively finish the
+    linked proc) and monitors (:DOWN messages). NOTE: for a linked process
+    that is parked, finish() currently just marks it dead WITHOUT unwinding
+    its stack — that is exactly the leak path spike B warned about. Your
+    kill mechanism must be used here too, not just for explicit kills.
+  - No receive-after: proc.recv_wait parks forever; Elixir
+    `receive ... after` is not compilable today.
+
+TASK:
+4.1  Kill path. Stash BOTH resolve and reject when parking (recv_wait and
+     yield). Add kill(pid, reasonRef): if the target is parked, call
+     p.reject(new ProcKill(reasonRef)) which unwinds the Wasm stack through
+     JSPI; the existing run.then(..., () => finish(pid, false)) at line
+     ~122 then fires finish() normally. If the target is queued-but-not-
+     parked (toStart/toReady), remove it from the queue and finish it
+     directly (no stack exists yet / it's between suspensions). Route the
+     existing abnormal-link-propagation branch in finish() through kill()
+     so linked parked processes are unwound, not abandoned.
+     Make sure finish() is idempotent (guard on p.dead) — kill during
+     cascade can re-enter it.
+4.2  Expose it to Elixir: the compiler already lowers
+     Process.exit/2-shaped BIFs to a "proc" import (check the proc import
+     list in scheduler.mjs lines 30-58 — `exit` exists for self-exit;
+     extend for exit(pid, reason)). Cross-check what the compiler emits:
+     grep beam2wasm.exs for `"exit"` / spawn_opt handling around lines
+     2400-2510 before assuming the import name.
+4.3  Fairness. Replace strict queue priority with interleaving — simplest
+     correct option: one combined FIFO of {kind, pid} entries, or
+     round-robin one item per queue per loop turn. Don't overbuild;
+     BEAM-style per-process accounting can come later. The invariant that
+     matters: a continuously-spawning main process must not starve
+     toResume/toReady forever.
+4.4  receive-after timers. Parking with a timeout: in recv_wait, if the
+     process has a pending `after` deadline, use setTimeout to resolve the
+     park with a "timed out" marker the compiled code can branch on. This
+     needs compiler cooperation (the wait_timeout BEAM opcode — check
+     whether beam2wasm.exs handles wait_timeout at all; if not, that's the
+     other half of this task and it's a compiler change: grep for
+     `:wait_timeout` / `:wait` in the emit case around lines 2067-2637).
+     If the compiler half is too big, ship 4.1-4.3 alone — they're
+     independent.
+
+TESTS (add to conformance — this is mandatory, the suite is the contract):
+  - kill of a parked process: parent spawns child that parks in receive,
+    parent kills it, monitors confirm :DOWN with the right reason.
+  - abnormal exit cascading through a link chain of 3+ parked processes.
+  - spawn-storm fairness: main loops spawning trivial children while a
+    sibling pingpongs messages; assert the sibling makes progress (this
+    one may need to be a runtime/ unit test rather than a differential
+    test, since the VM oracle trivially passes it).
+  - if 4.4 lands: receive-after-0 (mailbox poll) and receive-after-100.
+MEMORY CHECK: rerun the spike B abandon-vs-kill measurement shape against
+the REAL scheduler (adapt spikes/01-jspi-economics/spikeB.mjs): park 10k
+processes, kill all, force GC (node --expose-gc), assert heap returns to
+baseline.
+
+VERIFY: conformance (incl. your new cases), fuzz, gaps all green. The
+existing "processes", "genserver", "supervisor", "registry" conformance
+categories are the regression net for everything you touch here.
+
+--------------------------------------------------------------------------------
+TODO 5 — COMPILER REFACTOR + TWO SMALL CORRECTNESS FIXES (~3-5 days)
+--------------------------------------------------------------------------------
+
+WHY: beam2wasm.exs works and is well-tested from outside, but it is one
+3,711-line file: run/1 is ~430 lines of orchestration; compile_fun
+(line 2022) contains a single `case` over every BEAM opcode (~lines
+2067-2637, 100+ clauses, with ~200 lines of near-duplicate call/tail-call
+handler patterns); global state flows through ~17 undocumented Process
+dictionary keys; the builtins WAT library is ~1,000 lines of inline
+strings. Each new feature gets more expensive. Do the refactor BEFORE the
+next feature, not during.
+
+DO THE TWO SMALL FIXES FIRST (independent, low-risk):
+
+5.1  STUB operand fallback emits silent wrong code.
+     beam2wasm.exs:2743-2745:
+       defp operand(o) do
+         if Process.get(:stub), do: "(ref.null none)", else: raise(...)
+       end
+     Under STUB=1 an UNRECOGNIZED OPERAND becomes nil. Unlike opcode-level
+     stubs (which compile to traps and are honestly counted in the "STUBS:"
+     meter), this can produce a wrong VALUE that flows onward — the only
+     known path to a silent wrong answer in STUB mode, which would
+     undermine the gaps harness's "0 lies" guarantee. FIX: always raise, or
+     emit `(unreachable)`-guarded code; never a usable nil. Then run the
+     gaps harness — if nothing regresses, no program was relying on it
+     (expected: the catch-all is for operand SHAPES we've never seen).
+
+5.2  Error context on unhandled constructs. beam2wasm.exs:2364
+     (`raise "bs_match cmd: ..."`) and :2635
+     (`raise "unhandled in #{name}/#{arity}: ..."`). 2635 has fn/arity;
+     2364 doesn't. Standardize both to include module, function/arity, and
+     a hint ("set STUB=1 to compile this to a trap and continue").
+
+THEN THE SPLIT (mechanical; the harnesses make it safe):
+
+5.3  Target shape — a compiler/ directory of modules, beam2wasm.exs
+     becoming a thin entry point:
+       lib/orchestrate.ex   run/1: disasm, DCE worklist, mode detection,
+                            atom interning, closure scan, export wrappers
+       lib/builtins.ex      the WAT-string builtin library (term_compare,
+                            int_* tier helpers, $mnode map BST, binaries,
+                            EH glue) — pure data, easiest to move first
+       lib/emit.ex          compile_fun + the opcode case, split by family:
+                            calls/control-flow, tests/guards, list-tuple-
+                            map, binaries (bs_*), arith/specialization,
+                            processes/BIF intercepts, exceptions (try/
+                            try_case/htgt machinery)
+       lib/operand.ex       operand/val/materialize/int_literal/float_lit
+                            + the typed-register specialization helpers
+     Replace the Process-dictionary globals with an explicit context struct
+     threaded through emit (or at minimum: document every key in one
+     comment block at the top of run/1 and keep pdict — the struct is
+     better but 10x the diff; judge by how much time you have. The KEYS as
+     of today: :primary_mod :proc :exc :stub :bignum :float :closures
+     :atom_idx :stubs :consts :const_n :const_defs :reds :tramp_base
+     :atom_names :req_override :mapsfold).
+5.4  Deduplicate the i31 bounds: @i31_lo/@i31_hi exist at lines 2750-2751
+     but int_literal at line 3688 repeats the literals in a guard. Guards
+     can use module attributes — use them.
+5.5  Unify the repeated call-variant pattern: ~12+ BIF intercepts each
+     handle {call_ext, ...} / {call_ext_only, ...} / {call_ext_last, ...}
+     with the same set/return/return shape (e.g. the whereis handler near
+     line 2427). One helper taking (expr, call_kind) kills ~150 lines.
+     Do this DURING the family split, not as a separate pass.
+
+RULES FOR THE REFACTOR:
+  - No behavior changes mixed in. Each commit: move code, run all three
+    harnesses, commit. The WAT output should be byte-identical until 5.4/5.5
+    (which may legally reorder nothing — verify by diffing generated .wat
+    for a few gaps programs before/after: gaps/_work/ keeps artifacts).
+  - The harness invocations reference ../compiler/beam2wasm.exs by path
+    (grep conformance/run.exs, fuzz/run.exs, gaps/run.exs for
+    "beam2wasm") — keep that entry point working at the same path.
+
+VERIFY: all three harnesses after every step. Final check: byte-diff the
+.wat for 3 representative programs (one pure, one proc, one binaries-heavy)
+against pre-refactor output.
+
+--------------------------------------------------------------------------------
+TODO 6 — HARNESS HARDENING (small; ~2-3 hours; do anytime)
+--------------------------------------------------------------------------------
+
+6.1  Non-proc conformance/fuzz/gaps runs have NO timeout: System.cmd(@node,
+     ...) blocks forever if the Wasm loops infinitely — the suite HANGS
+     instead of FAILING. (Proc-path oracle already has a 10s Task.await;
+     conformance/run.exs:571.) Wrap the node invocations with a timeout
+     (Task.async + Task.yield + System.cmd into a port you can kill, or
+     simplest: prepend `timeout 30` / `gtimeout 30` if available and map
+     exit 124 to a TIMEOUT sentinel). Make sure a timeout produces a
+     sentinel string that can never equal a real canonical result, matching
+     the existing BUILD_ERR/PROC_ERR/ORACLE_ERR pattern
+     (conformance/run.exs:617-621).
+6.2  Float coverage gap: the conformance canonicalizer
+     (conformance/run.exs:532-537 and the mirror in
+     conformance/driver.mjs:46-56) has int/bool/atom/bin/list forms but NO
+     float form, so no conformance case can assert a float result — float
+     correctness currently rests only on the demo (haversine) and gaps
+     programs. Add canon(:float, v) on both sides. Format must be
+     bit-exact-stable: use Float.to_string on the VM side and the matching
+     formatting in JS — SAFEST is to compare the 64-bit pattern instead:
+     canon both sides as the hex of the IEEE-754 bits
+     (<<v::float-64>> on VM; new DataView + getBigUint64 in JS). Then add
+     a "floats" category: arithmetic, :math.sin/sqrt/pow round-trips,
+     Float.round, integer/float mixed comparison.
+6.3  (Optional, from review) fuzz bisection reports the first diverging op
+     COUNT but not the op itself. A small quality-of-life: after bisecting
+     to nops=N, have the VM side print ops N-2..N (the Ledger op stream is
+     derivable from the seed) so the failing operation is named in the
+     report. See fuzz/run.exs:126-147 (bisect) and fuzz/ledger.ex (op
+     decoding from the PRNG).
+
+VERIFY: run all three harnesses; counts unchanged. For 6.1, hand-test by
+temporarily compiling an infinite loop and confirming TIMEOUT, not a hang.
+
+--------------------------------------------------------------------------------
+SUGGESTED ORDER
+--------------------------------------------------------------------------------
+  1. TODO 2  (paths/flags — unblocks anyone else from even running this)
+  2. TODO 1  (docs — highest leverage, zero risk, do while context is fresh)
+  3. TODO 6.1 (timeout — protects you during everything below)
+  4. TODO 3  (shared imports — removes a whole bug class before runtime work)
+  5. TODO 4  (scheduler kill/fairness — the real architectural gap)
+  6. TODO 5  (compiler fixes + refactor — before the NEXT compiler feature)
+  7. TODO 6.2/6.3 (whenever)
+
+KNOWN-OPEN FEATURE GAPS (NOT in this TODO; tracked in gaps/FINDINGS.md):
+protocols (Enumerable/String.Chars — blocks string interpolation), Stream,
+Regex compiled in-Wasm (currently host re_run/re_split), :sets/MapSet,
+non-byte-aligned bitstrings, receive-after (half-covered by TODO 4.4),
+Jason DECODE (needs the i64 SWAR path), cross-isolate ETF messaging, and
+everything under ROADMAP "needs real Cloudflare". Consult gaps/GAPS_FOUND.txt
+for the frequency-ranked function list before choosing what to support next.
+================================================================================
