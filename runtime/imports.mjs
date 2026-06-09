@@ -117,6 +117,49 @@ export const makeStr = (getExports) => {
     return wrBytes(buf);
   };
 
+  // Regex.run(re, subj, return: :index): match positions as BYTE offsets. Frame:
+  // <<matched:8, count:32, (off:32, len:32)...>> for [full_match, captures...]; non-participating
+  // group -> (0xFFFFFFFF, 0) so the WAT can emit {-1,0} like :re. No match -> <<0>>.
+  const re_run_index = (patB, subjB) => {
+    const subj = rdBin(subjB);
+    const m = new RegExp(rdBin(patB), "d").exec(subj);
+    if (!m) return wrBytes(new Uint8Array([0]));
+    const blen = (s) => encU.encode(s).length; // UTF-16 index -> byte offset
+    let idx = Array.from(m.indices);
+    while (idx.length > 1 && idx[idx.length - 1] === undefined) idx.pop();
+    const buf = new Uint8Array(5 + idx.length * 8);
+    const dv = new DataView(buf.buffer);
+    buf[0] = 1;
+    dv.setUint32(1, idx.length);
+    let o = 5;
+    for (const gi of idx) {
+      if (gi === undefined) { dv.setUint32(o, 0xffffffff); dv.setUint32(o + 4, 0); }
+      else { const s = blen(subj.slice(0, gi[0])); dv.setUint32(o, s); dv.setUint32(o + 4, blen(subj.slice(0, gi[1])) - s); }
+      o += 8;
+    }
+    return wrBytes(buf);
+  };
+
+  // Regex.replace(re, subj, replacement) with a STRING replacement (global). Convert Elixir replacement
+  // syntax to JS: \0 -> whole match, \N -> capture N, literal $ -> $$ (so JS doesn't reinterpret it).
+  const elixirReplToJs = (r) => {
+    let out = "";
+    for (let i = 0; i < r.length; i++) {
+      const c = r[i];
+      if (c === "$") out += "$$";
+      else if (c === "\\" && i + 1 < r.length) {
+        const n = r[i + 1];
+        if (n === "0") { out += "$&"; i++; }
+        else if (n >= "1" && n <= "9") { out += "$" + n; i++; }
+        else if (n === "\\") { out += "\\"; i++; }
+        else out += c;
+      } else out += c;
+    }
+    return out;
+  };
+  const re_replace = (patB, subjB, replB) =>
+    wrBin(rdBin(subjB).replace(new RegExp(rdBin(patB), "g"), elixirReplToJs(rdBin(replB))));
+
   return {
     upcase: (b) => wrBin(rdBin(b).toUpperCase()),
     downcase: (b) => wrBin(rdBin(b).toLowerCase()),
@@ -127,6 +170,8 @@ export const makeStr = (getExports) => {
     upchar: (cp) => String.fromCodePoint(cp).toUpperCase().codePointAt(0),
     re_split,
     re_run,
+    re_run_index,
+    re_replace,
   };
 };
 

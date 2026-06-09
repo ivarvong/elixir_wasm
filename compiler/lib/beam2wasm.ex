@@ -162,7 +162,7 @@ defmodule Beam2Wasm do
         match?({_, _, {:extfunc, :crypto, :hash, 2}}, op) or match?({_, _, {:extfunc, :crypto, :hash, 2}, _}, op)
       end)
     end)
-    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :unix, :linux] ++
+    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :unix, :linux, :return, :index] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
              if(exc, do: [:throw, :error, :exit, :EXIT], else: [])
@@ -203,7 +203,20 @@ defmodule Beam2Wasm do
       end)
     end)
     Process.put(:regex_split, regex_split?)
-    regex_run? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+    regex_run3? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, Regex, :run, 3}}, op) or match?({_, _, {:extfunc, Regex, :run, 3}, _}, op)
+      end)
+    end)
+    Process.put(:regex_run3, regex_run3?)
+    regex_replace3? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, Regex, :replace, 3}}, op) or match?({_, _, {:extfunc, Regex, :replace, 3}, _}, op)
+      end)
+    end)
+    Process.put(:regex_replace3, regex_replace3?)
+    # run/2 shim is also needed when run/3 is used (run/3 delegates to it for the non-index path).
+    regex_run? = regex_run3? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Regex, :run, 2}}, op) or match?({_, _, {:extfunc, Regex, :run, 2}, _}, op)
       end)
@@ -247,6 +260,8 @@ defmodule Beam2Wasm do
       (if to_string?(user), do: [{String.Chars, :to_string, 1}], else: []) ++
       (if regex_split?, do: [{Regex, :split, 3}], else: []) ++
       (if regex_run?, do: [{Regex, :run, 2}], else: []) ++
+      (if regex_run3?, do: [{Regex, :run, 3}], else: []) ++
+      (if regex_replace3?, do: [{Regex, :replace, 3}], else: []) ++
       (if titlecase?, do: [{:string, :titlecase, 1}], else: []) ++
       (if http_get?, do: [{Req, :get!, 1}], else: []) ++
       (if crypto_hash?, do: [{:crypto, :hash, 2}], else: [])
@@ -303,6 +318,8 @@ defmodule Beam2Wasm do
       if(strcase?, do: "  (import \"str\" \"upcase\" (func $host_str_upcase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"downcase\" (func $host_str_downcase (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(regex_split?, do: "  (import \"str\" \"re_split\" (func $host_re_split (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(regex_run?, do: "  (import \"str\" \"re_run\" (func $host_re_run (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_run3?, do: "  (import \"str\" \"re_run_index\" (func $host_re_run_index (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(titlecase?, do: "  (import \"str\" \"titlecase\" (func $host_str_titlecase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"upchar\" (func $host_str_upchar (param i32) (result i32)))", else: ""),
       if(http_get? or req_in_user, do: "  (import \"http\" \"get\" (func $host_http_get (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(crypto_hash?, do: "  (import \"crypto\" \"hash\" (func $host_crypto_hash (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
@@ -406,6 +423,44 @@ defmodule Beam2Wasm do
             (local.set $cnt (i32.sub (local.get $cnt) (i32.const 1)))
             (br $lp)))
           (return_call $lists.reverse_1 (local.get $out)))\
+      """, else: ""),
+      # Regex.run(regex, subject, opts) — only the `return: :index` option differs from run/2: it returns
+      # a list of {byte_offset, byte_length} tuples (a non-participating group is {-1, 0}, like :re). Any
+      # other opts -> delegate to run/2 (the string form).
+      if(regex_run3?, do: """
+        (func $Elixir_46_Regex.run_3 (param $re (ref null eq)) (param $subj (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+          (local $fb (ref $bytes)) (local $cnt i32) (local $off i32) (local $o i32) (local $ln i32) (local $idx i32) (local $out (ref null eq)) (local $l (ref null eq)) (local $t (ref $tuple))
+          (local.set $l (local.get $opts))
+          (block $sd (loop $sl
+            (br_if $sd (i32.eqz (ref.test (ref $cons) (local.get $l))))
+            (if (ref.test (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+              (then (local.set $t (ref.cast (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l)))))
+                (if (i32.and (i32.eq (array.len (local.get $t)) (i32.const 2))
+                       (i32.and (ref.eq (array.get $tuple (local.get $t) (i32.const 0)) (global.get $atom_return))
+                                (ref.eq (array.get $tuple (local.get $t) (i32.const 1)) (global.get $atom_index))))
+                  (then (local.set $idx (i32.const 1))))))
+            (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+            (br $sl)))
+          (if (i32.eqz (local.get $idx)) (then (return_call $Elixir_46_Regex.run_2 (local.get $re) (local.get $subj))))
+          (local.set $fb (call $bin_bytes (call $host_re_run_index (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj))))
+          (if (i32.eqz (array.get_u $bytes (local.get $fb) (i32.const 0))) (then (return (global.get $atom_nil))))
+          (local.set $cnt (call $rdu32be (local.get $fb) (i32.const 1)))
+          (local.set $off (i32.const 5))
+          (block $done (loop $lp
+            (br_if $done (i32.eqz (local.get $cnt)))
+            (local.set $o (call $rdu32be (local.get $fb) (local.get $off)))
+            (local.set $ln (call $rdu32be (local.get $fb) (i32.add (local.get $off) (i32.const 4))))
+            (local.set $off (i32.add (local.get $off) (i32.const 8)))
+            (local.set $out (struct.new $cons (array.new_fixed $tuple 2 (ref.i31 (local.get $o)) (ref.i31 (local.get $ln))) (local.get $out)))
+            (local.set $cnt (i32.sub (local.get $cnt) (i32.const 1)))
+            (br $lp)))
+          (return_call $lists.reverse_1 (local.get $out)))\
+      """, else: ""),
+      # Regex.replace(regex, subject, replacement) — global string replace, delegated to a host JS RegExp.
+      # (Elixir \\N backrefs / \\0 whole-match are translated to JS $N / $& host-side.)
+      if(regex_replace3?, do: """
+        (func $Elixir_46_Regex.replace_3 (param $re (ref null eq)) (param $subj (ref null eq)) (param $repl (ref null eq)) (result (ref null eq))
+          (return_call $host_re_replace (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj) (local.get $repl)))\
       """, else: ""),
       # String.Unicode.upcase/downcase(string, mode, acc) -> the cased binary (mode/acc ignored: acc=[]
       # at the top-level entry, and the host does the whole string at once). Genuinely table-backed.
