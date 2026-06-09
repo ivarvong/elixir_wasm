@@ -44,22 +44,51 @@ defmodule MdDemo do
   end
 
   defp blog_beam, do: Path.join(@app, "_build/dev/lib/blog/ebin/Elixir.Blog.beam")
-  defp jason_beams, do: Path.wildcard(Path.join(@app, "_build/dev/lib/jason/ebin/*.beam"))
+  defp dep_beams(dep), do: Path.wildcard(Path.join(@app, "_build/dev/lib/#{dep}/ebin/*.beam"))
   defp stdlib_beams do
-    [Enum, String, String.Chars, List, Map, Keyword, Integer, Float, Tuple, Range, Stream,
-     Enumerable, Collectable, Inspect, :lists, :maps, :unicode]
+    # NB: omit modules the compiler already shims (Regex/:re/:binary/:unicode/:math/:string) — including
+    # their beams double-defines the host-shimmed functions ("repeated function name").
+    # Include protocol IMPL modules (Enumerable.List etc.) so the dynamic apply dispatch in the consolidated
+    # protocols has real targets to call.
+    [Kernel, Enum, String, String.Chars, List, Map, MapSet, Keyword, Integer, Float, Tuple, Range, Stream,
+     Enumerable, Collectable, Inspect, Inspect.Algebra, Access, :lists, :maps, :sets, :ordsets, :gb_sets,
+     Enumerable.List, Enumerable.Map, Enumerable.Range, Enumerable.MapSet, Enumerable.Function, Enumerable.Stream,
+     Collectable.List, Collectable.Map, Collectable.MapSet, Collectable.BitString,
+     String.Chars.Integer, String.Chars.Float, String.Chars.List, String.Chars.BitString, String.Chars.Atom]
     |> Enum.map(fn m -> to_string(:code.which(m)) end)
     |> Enum.filter(&String.ends_with?(&1, ".beam"))
+  end
+
+  # mix consolidates protocols (Enumerable/Collectable/Inspect/String.Chars/Jason.Encoder) into
+  # _build/.../consolidated/ — impl_for/1 resolved statically (no runtime Module.concat dispatch).
+  # Prefer those over the system/unconsolidated copies of the same module.
+  defp consolidated_beams, do: Path.wildcard(Path.join(@app, "_build/dev/lib/blog/consolidated/*.beam"))
+  # Drop unconsolidated copies of modules that have a consolidated build, but PRESERVE ORDER — the first
+  # beam (Blog) must stay first, because the compiler takes the primary module from hd(beams).
+  defp dedup_prefer_consolidated(beams) do
+    cons_names = MapSet.new(consolidated_beams(), &Path.basename/1)
+    cons_paths = MapSet.new(consolidated_beams())
+    {kept, _} =
+      Enum.reduce(beams, {[], MapSet.new()}, fn b, {acc, seen} ->
+        name = Path.basename(b)
+        drop_unconsolidated = MapSet.member?(cons_names, name) and not MapSet.member?(cons_paths, b)
+        if MapSet.member?(seen, name) or drop_unconsolidated,
+          do: {acc, seen},
+          else: {[b | acc], MapSet.put(seen, name)}
+      end)
+    Enum.reverse(kept)
   end
 
   defp build_wasm() do
     watf = Path.join(@tmp, "blog.wat")
     wasmf = Path.join(@tmp, "blog.wasm")
-    beams = [blog_beam() | jason_beams()] ++ stdlib_beams()
-    cmd = "elixir #{inspect(@beam2wasm)} #{Enum.map_join(beams, " ", &inspect/1)} > #{inspect(watf)} 2>/dev/null"
+    beams =
+      ([blog_beam() | dep_beams("jason")] ++ dep_beams("earmark") ++ stdlib_beams() ++ consolidated_beams())
+      |> dedup_prefer_consolidated()
+    cmd = "elixir #{inspect(@beam2wasm)} #{Enum.map_join(beams, " ", &inspect/1)} > #{inspect(watf)} 2>#{inspect(watf <> ".stub")}"
     {_, 0} = System.shell(cmd, env: [{"EXPORTS", "render:int->bin"}, {"STUB", "1"}, {"BIGNUM", "1"}])
     {_, 0} = System.cmd(@wasmas, Tooling.wasm_as_args(watf, wasmf, ["-g"]), stderr_to_stdout: true)
-    IO.puts("  built #{Float.round(File.stat!(wasmf).size / 1024, 0)} KB wasm from #{length(beams)} beams (Blog + real Jason + stdlib)")
+    IO.puts("  built #{Float.round(File.stat!(wasmf).size / 1024, 0)} KB wasm from #{length(beams)} beams (Blog + real Jason + real Earmark + stdlib)")
     {wasmf, watf}
   end
 
@@ -68,11 +97,10 @@ defmodule MdDemo do
     out
   end
 
-  defp wasm_render(wasmf, watf, seed) do
-    casesf = Path.join(@tmp, "cases.json")
-    File.write!(casesf, ~s([{"name":"render","ret":"bin","args":[{"type":"int","val":#{seed}}]}]))
-    case Tooling.cmd(@node, [@driver, wasmf, watf, casesf]) do
-      {out, 0} -> strip_binprefix(out)             # driver emits exactly "b:<html>"; don't trim the HTML's own \n
+  @runner Path.join(@here, "runner.mjs")
+  defp wasm_render(wasmf, _watf, seed) do
+    case Tooling.cmd(@node, [@runner, wasmf, to_string(seed)]) do
+      {out, 0} -> strip_binprefix(out)             # runner emits exactly "b:<html>" (or "TRAP@fn")
       {out, s} -> "WASMERR:#{s}:#{String.slice(out, 0, 80)}"
     end
   end
@@ -98,11 +126,12 @@ defmodule MdDemo do
   defp bench_js do
     """
     import fs from "node:fs";
-    import { makeBig, makeMath, makeStr } from "#{Path.join(@here, "../../runtime/imports.mjs")}";
+    import { makeBig, makeMath, makeStr, makeProcStubs } from "#{Path.join(@here, "../../runtime/imports.mjs")}";
     const big = makeBig(), math = makeMath(); let e; const str = makeStr(() => e);
+    const { proc, sched } = makeProcStubs();
     const bytes = fs.readFileSync(process.argv[2]);
     let t = performance.now(); const mod = new WebAssembly.Module(bytes); const tc = performance.now()-t;
-    t = performance.now(); e = new WebAssembly.Instance(mod, { big, math, str }).exports; const ti = performance.now()-t;
+    t = performance.now(); e = new WebAssembly.Instance(mod, { big, math, str, proc, sched }).exports; const ti = performance.now()-t;
     for (let i=0;i<200;i++) e.render(i);              // warm
     const N = 20000; t = performance.now(); for (let i=0;i<N;i++) e.render(i); const dt = performance.now()-t;
     console.log("    module_compile=" + tc.toFixed(1) + "ms  instantiate=" + ti.toFixed(2) + "ms");
