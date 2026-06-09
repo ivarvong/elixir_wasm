@@ -58,13 +58,40 @@ elixir run.exs p14      # filter
 12. **Non-byte-aligned bitstrings** — `p18`'s `pack_bits/2` was stubbed: building a **sub-byte/10-bit
     packed bitstream** isn't supported (byte-aligned `<<>>` is — see below).
 
+## Map iteration order — a semantic boundary, not a compiler bug (p01)
+
+`p01_text_analytics` surfaced as an apparent **compiler lie** (a wrong checksum with 0 stubs). A
+checkpoint bisector localized the first divergence to one line that ranked bigram frequencies via
+`top_keys`, which sorted by count **alone** (`fn {_, c} -> -c end`) and broke ties by **map
+iteration order**. Decomposition proved the map *contents* were bit-identical (an order-independent
+`fold_map`, which sorts its input, matched); only the *iteration order* differed.
+
+Root cause is a representation difference, **not** a miscompile:
+- The WasmGC runtime stores maps as a weight-balanced BST → iteration is **key-sorted**.
+- BEAM stores ≤32-key maps as a **flatmap** (also term-sorted — so small maps agree) but **>32-key
+  maps as a 16-ary HAMT** keyed by the OTP-internal `make_internal_hash` (a MurmurHash3 finalizer
+  over the internal hash), emitted slot-15→0 reversed-depth-first. That order is **not** key-sorted,
+  not `phash2`, not term order. (Verified against the OTP-28 source: `erl_map.{c,h}`,
+  `erl_term_hashing.c`; `MAP_SMALL_MAP_LIMIT = 32`.)
+
+That's why the **unigram** frequency map (≤27 vocab words → flatmap → sorted both ways) matched, but
+the **bigram** map (>32 distinct → HAMT) diverged. Elixir documents map iteration order as
+**unspecified**, and the OTP order is an implementation detail that is not even stable across OTP
+minor versions — so replicating it in the runtime would be both impractical and wrong.
+
+**Resolution:** fixed the corpus program to use a **total** sort key `{-c, k}` (matching its own
+sibling `ranked` sort, which always agreed), making it deterministic across conforming
+implementations. p01 is now provably correct (8/8). Lesson for the corpus and for users: never rank
+or fold a >32-key map by a non-total key — sort by a tuple that includes the key. (The ARCHITECTURE
+map-representation section notes the key-sorted iteration order as a deliberate, documented delta.)
+
 ## Codegen / tooling findings (not stdlib gaps)
 
-- **`p16_calendar_engine` won't instantiate**: the built `.wasm` contains an `exact` heap type
-  ("invalid heap type 'exact', enable with --experimental-wasm-custom-descriptors"). `wasm-as -all`
-  is emitting a newer WasmGC feature (exact references / custom descriptors) that Node 24 rejects without
-  a flag. Likely a `wasm-as` feature-flag issue (pin the enabled features, or pass the node flag) — worth
-  pinning so builds are portable.
+- **`exact` heap types under `wasm-as -all` (RESOLVED).** `wasm-as -all` emits a newer WasmGC feature
+  (exact references / custom descriptors) that stock Node 24 rejects at instantiation ("invalid heap
+  type 'exact'"). Fixed by passing `--disable-custom-descriptors` (we don't use RTTs); this is now the
+  canonical flag set in `tooling.exs` (`Tooling.wasm_as_args/3`), applied uniformly across all harnesses.
+  `p16_calendar_engine` — which originally exposed this — is now provably correct (8/8).
 
 ## What this says about the compiler
 

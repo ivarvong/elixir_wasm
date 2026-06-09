@@ -77,7 +77,11 @@ defmodule Gap01 do
     gen_words(n - 1, s2, [w | acc])
   end
 
-  defp top_keys(list), do: list |> Enum.frequencies() |> Enum.sort_by(fn {_, c} -> -c end) |> Enum.take(8) |> Enum.map(&elem(&1, 0))
+  # Tie-break by key (total order), like the `ranked` sort above. Sorting by -c ALONE leaves
+  # equal-count keys in map-iteration order, which is unspecified in Elixir and legitimately
+  # differs between BEAM (hash order for >32-entry maps) and the WasmGC runtime (key-sorted) —
+  # so a bare -c sort makes this corpus program non-deterministic across conforming impls.
+  defp top_keys(list), do: list |> Enum.frequencies() |> Enum.sort_by(fn {k, c} -> {-c, k} end) |> Enum.take(8) |> Enum.map(&elem(&1, 0))
 
   # ---- shared checksum kit (identical across the gap corpus) ----
   defp rng(s, m), do: {rem(div(s, 65_536), max(m, 1)), nxt(s)}
