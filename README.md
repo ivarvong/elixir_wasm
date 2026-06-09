@@ -104,5 +104,7 @@ hand-written, or elided for the prototype, it is labeled as such in the relevant
 section. The intent is that a skeptical reviewer can reproduce the claims and trust the boundaries.
 
 **The mission bar:** any non-native (pure Elixir/Erlang) code runs here, bit-exact vs the VM — and if
-it doesn't, that's a bug. **`LIMITATIONS.md`** is the canonical line between true limits (NIF shim
-fidelity, platform effects, runtime codegen, scale) and the enumerated bug inventory we're burning down.
+it doesn't, that's a bug. IO (file, network) is handed back to the **host** at the import boundary
+(virtual filesystem on Workers is fine). **`LIMITATIONS.md`** is the canonical line between true limits
+(NIF shim fidelity, host-effect availability, runtime codegen, scale) and the enumerated bug inventory
+we're burning down.

@@ -14,9 +14,13 @@ When a real pure-Elixir program traps on an unsupported function or compiler gap
   input to dodge it.
 - **Do NOT stop to ask** "should I solve this or ship?" — building it *is* the job.
 - "All pure Elixir should run unless there's a *reason* it can't." **`LIMITATIONS.md` is the canonical
-  line**: §1 lists the only legitimate limits (NIF shim fidelity, platform effects, runtime codegen →
-  interp tier, scale); §2 the documented deltas; **everything in §3 is a bug** with an enumerated
-  inventory. **"It's a lot of work" is not a reason** — that work is the point.
+  line**: §1 lists the only legitimate limits (NIF shim fidelity, host-effect availability, runtime
+  codegen → interp tier, scale); §2 the documented deltas; **everything in §3 is a bug** with an
+  enumerated inventory. **"It's a lot of work" is not a reason** — that work is the point.
+- **IO (file, network) is handed back to the host** at the import boundary, like NIFs. The host decides
+  the backing: real fs/sockets on Node, a **virtual filesystem** (in-memory or KV/R2/DO-backed) + fetch
+  on Workers. `File.read/1` works wherever the host wires it; an unwired effect traps honestly. Building
+  the effects ABI is inventory work, not a limit.
 - NIFs / Erlang built-ins (`:re`, `:crypto`, `:erlang`, `:binary`, `:unicode`, `:math`) are **shimmed at
   the host boundary**, not skipped. A pure-Elixir lib on top of them (e.g. `Regex` over `:re`) runs by
   completing the shim.

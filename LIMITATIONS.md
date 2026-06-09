@@ -38,11 +38,20 @@ run" but **shim existence + semantic fidelity**:
 - **Time, randomness, entropy** (`:os.system_time`, seeds): host effects by nature; shimmed.
   (Note `:rand` itself is pure Erlang — only the seed is an effect.)
 
-### 1.2 Platform effects — the environment, not the language
-Cloudflare Workers has no filesystem (`File.*`), no OS (`:os`, ports), no raw sockets (HTTP via
-fetch only), a ~128MB isolate cap and ~10MB module cap (why function-level DCE exists). These bound
-what *effects* a program can perform, not what pure code computes. A pure function that never does
-I/O is unaffected; `File.read/1` will never work because there is no file.
+### 1.2 Effects are the host's — IO is handed back at the boundary
+File, network, and OS effects are **not** a language limit: they lower to host imports, exactly like
+NIFs. The compiled code calls `host.*`; **the host decides what backs it**:
+- On a Node host: the real filesystem, real sockets.
+- On Workers: a **virtual filesystem** (in-memory, or durable over KV/R2/DO storage) and
+  fetch-backed networking — both legitimate, both already the model used for `http.get`/`:crypto`
+  in the Req demo.
+- A host that provides nothing for an effect leaves an **honest trap**, never a wrong value.
+
+So `File.read/1` works wherever the host wires it. The only true limits here are what the host
+*platform* can physically provide (no raw sockets on Workers — fetch only; no subprocesses/ports)
+and the hard caps (~128MB isolate, ~10MB module — why function-level DCE exists). Defining the
+effects ABI (`File.*` → host fs imports, `IO.*` → console/stream imports) is **bug-inventory work
+(§3), not a limit**.
 
 ### 1.3 Runtime code creation
 `Code.eval_string`, runtime `Module.create`, `EEx.eval_string/eval_file` require compiling code at
@@ -116,8 +125,11 @@ leex/yecc-generated lexers (plain generated Erlang!), `Calendar`/`Date`/`DateTim
 `erlang.send/2` alias forms, `make_ref/0` outside proc mode, `Process.get/delete/sleep`, `Task.*`,
 runtime-variable `receive … after`, per-process reduction budgets, `unique_integer/0`.
 
-**Host-effect shims** **[builtin]**: `IO.puts/warn` → console, `application.get_key/2` → static app
-env, `convert_time_unit` (pure arithmetic).
+**Host-effect ABI** **[builtin]** — hand IO back to the host (a virtual backend is fine):
+- `File.*` → host fs imports (`fs_read`/`fs_write`/`fs_stat`/…): Node host = real fs; Workers host =
+  virtual fs (in-memory or KV/R2/DO-backed); absent = honest trap.
+- `IO.puts/warn/inspect` → host console/stream imports; `IO.stream` over host handles.
+- `application.get_key/2` → static app env; `convert_time_unit` (pure arithmetic).
 
 **Under investigation:** one real divergence — Earmark's `LineScanner` receives a non-binary on
 Wasm where the VM has a binary (differential debugging in progress; this is exactly the class the
