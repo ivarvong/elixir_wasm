@@ -143,7 +143,11 @@ harnesses exist to catch).
    gaps), and every new real-library demo (Jason, Req, Earmark, …) extends the probe surface.
 2. **The compiler never lies** — unsupported = a *counted trap* (`STUBS: N`, stub names listed),
    never a silently wrong value. 0 stubs ⇒ provably supported.
-3. **Planned: the stdlib API scoreboard** — enumerate every public function of every stdlib module
-   via `Module.__info__(:functions)`, generate seeded representative calls, diff Wasm vs VM, and
-   publish `Enum 74/74, Map 30/30, String 41/43, …`. That turns this whole document's §3 into a
-   shrinking number per release — the direct measurement of "any pure Elixir runs."
+3. **LIVE: the stdlib API scoreboard** (`scoreboard/run.exs`, results in `scoreboard/SCOREBOARD.md`) —
+   every public function of every roster module via `Module.__info__(:functions)`, concrete calls
+   generated from a typed input pool, diffed Wasm vs VM through identical checksums. Current:
+   **272/299 bit-exact (91.0%)** across 392 public functions of Enum/List/Map/Keyword/Tuple/Integer/
+   String/Range/MapSet/Float (93 awaiting input-pool generation). The 27 failures independently
+   re-derive §3's inventory: Float/Ryu formatting (7), Stream (3), dynamic atoms (2), `Map.pop`
+   family (5), MapSet-v2 internals (2), unicode-normalize (1)… This document's §3 is now a
+   **shrinking measured number per release** — the direct measurement of "any pure Elixir runs."
