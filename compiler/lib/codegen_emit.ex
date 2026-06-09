@@ -464,9 +464,12 @@ defmodule Codegen.Emit do
           {["(local.set $x0 (struct.new $pid (call $spawn_link_raw (local.get $x0))))"], false}
         {:call_ext_only, _ar, {:extfunc, :erlang, :spawn_link, 1}} ->
           {["(return (struct.new $pid (call $spawn_link_raw (local.get $x0))))"], true}
-        {:call_ext, _ar, {:extfunc, :erlang, :exit, 1}} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
-        {:call_ext_last, _ar, {:extfunc, :erlang, :exit, 1}, _d} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
-        {:call_ext_only, _ar, {:extfunc, :erlang, :exit, 1}} -> {["(call $exit_raw (local.get $x0))", "(unreachable)"], true}
+        # exit/1: route to the scheduler's $exit_raw in proc mode; outside proc mode there is no process
+        # to unwind, so it's an unrecoverable error path -> trap (never reached on a non-faulting run).
+        {ce, _ar, {:extfunc, :erlang, :exit, 1}} when ce in [:call_ext, :call_ext_only] ->
+          {(if Process.get(:proc), do: ["(call $exit_raw (local.get $x0))", "(unreachable)"], else: ["(unreachable)"]), true}
+        {:call_ext_last, _ar, {:extfunc, :erlang, :exit, 1}, _d} ->
+          {(if Process.get(:proc), do: ["(call $exit_raw (local.get $x0))", "(unreachable)"], else: ["(unreachable)"]), true}
         # exit/2 (Process.exit(pid, reason)): signal another process — the host unwinds a parked target
         # (kill-by-unwind) or, if it traps_exit, delivers {:EXIT, from, reason}. Returns true (unlike
         # exit/1, this one returns; tail forms return the value).

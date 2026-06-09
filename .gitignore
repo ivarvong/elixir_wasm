@@ -14,7 +14,7 @@ _work*/
 node_modules/
 
 # Elixir
-/_build/
-/deps/
+_build/
+deps/
 *.ez
 erl_crash.dump
