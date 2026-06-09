@@ -1,26 +1,24 @@
 # beam2wasm module-split plan (TODO 5.3 / 5.5)
 
-## Status: the compiler is now a library (DONE), the Emit split + 5.5 remain
+## Status: the compiler is now a 4-module library (DONE)
 
 `compiler/beam2wasm.exs` was one ~3740-line `Beam2Wasm` script. It is now a small library:
 
 ```
-compiler/beam2wasm.exs        11 lines   — thin CLI shim (Code.require_file the lib/, call run/1)
-compiler/lib/codegen_common.ex   55      — Codegen.Common: shared leaf helpers (term_eq, sanitize, bin_literal)
-compiler/lib/codegen_runtime.ex 1481      — Codegen.Runtime: the hand-written WAT runtime library
-compiler/lib/beam2wasm.ex      2219      — Beam2Wasm: run/1 orchestration + the emit path
+compiler/beam2wasm.exs           12 lines  — thin CLI shim (Code.require_file the lib/, call run/1)
+compiler/lib/codegen_common.ex     74      — Codegen.Common: shared leaf helpers (term_eq, sanitize, bin_literal, fq, type_test_i32)
+compiler/lib/codegen_runtime.ex  1481      — Codegen.Runtime: the hand-written WAT runtime library (mostly static WAT data)
+compiler/lib/codegen_emit.ex     1123      — Codegen.Emit: the per-function BEAM->WAT emit path (compile_fun + helpers)
+compiler/lib/beam2wasm.ex        1085      — Beam2Wasm: run/1 orchestration (disasm, DCE, atom interning, closures, exports)
 ```
 
-The split used `import` so call sites are unchanged; verified **byte-identical generated WAT** across
+Both splits used `import` so call sites are unchanged; verified **byte-identical generated WAT** across
 all 109 harness programs (behavior preserved by construction) plus conformance 161/161, fuzz 33/33,
-gaps 19/20. The runtime cluster's only external deps were exactly {term_eq, sanitize, bin_literal}
-(AST-confirmed), which is why Codegen.Common is tiny.
+gaps 19/20. AST call-graph analysis drove the partitions. A lesson banked here: the analyzer's name
+regex must include `?`/`!` (predicate/bang fns) or it silently under-counts — caught by the compile +
+byte-diff gates, which is exactly why those gates exist.
 
 **Remaining (deferred, lower priority):**
-- **Split `Codegen.Emit` out of `lib/beam2wasm.ex`** — `compile_fun/2` + the opcode `case` + its emit
-  helpers, leaving `run/1` orchestration in `Beam2Wasm`. Same recipe: move funcs, `import Codegen.Common`
-  (the emit cluster also shares only term_eq/bin_literal with runtime), verify byte-identical WAT. This
-  drops `lib/beam2wasm.ex` to a focused ~1000-line orchestration module.
 - **5.5 call-variant dedup** — a `ret_value(ce, e)` helper for the recurring `call_ext`→`(local.set $x0 e)`
   / tail-form→`(return e)` idiom (whereis, spawn_opt, apply, exit/2, …). This *changes* the WAT, so verify
   with the harnesses (not byte-diff). ~30–40 lines.

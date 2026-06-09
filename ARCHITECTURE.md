@@ -123,13 +123,14 @@ Key design points:
 
 ## 6. The compiler
 
-The compiler is a small Elixir **library** under `compiler/lib/` — `Codegen.Common` (shared leaf helpers),
-`Codegen.Runtime` (the hand-written WAT runtime library), and `Beam2Wasm` (the `run/1` orchestration + emit
-path) — with `compiler/beam2wasm.exs` as a thin CLI shim so `elixir beam2wasm.exs <beams>` still works.
-(It began as one ~320-line script and grew to ~3,740 with each capability below; the split keeps the same
-output — verified byte-identical. Further splitting `Codegen.Emit` out + full Mix packaging are tracked in
-`compiler/REFACTOR_PLAN.md`.) It reads one or more `.beam` files via `:beam_disasm`, merges their functions
-into one WasmGC module, and emits WAT.
+The compiler is a small Elixir **library** under `compiler/lib/`: `Codegen.Common` (shared leaf helpers),
+`Codegen.Runtime` (the hand-written WAT runtime library), `Codegen.Emit` (the per-function BEAM→WAT emit
+path — `compile_fun` + helpers), and `Beam2Wasm` (the `run/1` orchestration: disasm, DCE, atom interning,
+closures, exports) — with `compiler/beam2wasm.exs` a thin CLI shim so `elixir beam2wasm.exs <beams>` still
+works. (It began as one ~320-line script and grew to ~3,740; the modules were extracted via AST call-graph
+analysis with `import`, keeping the output **byte-identical** — verified across all 109 harness programs.
+Full Mix packaging is tracked in `compiler/REFACTOR_PLAN.md`.) It reads one or more `.beam` files via
+`:beam_disasm`, merges their functions into one WasmGC module, and emits WAT.
 
 Lowering strategy:
 - **Each BEAM function → one Wasm function.**

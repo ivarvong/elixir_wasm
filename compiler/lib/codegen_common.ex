@@ -52,4 +52,23 @@ defmodule Codegen.Common do
     inner = if bytes == [], do: "", else: " " <> Enum.map_join(bytes, " ", &"(i32.const #{&1})")
     "(struct.new $binary (array.new_fixed $bytes #{length(bytes)}#{inner}))"
   end
+
+
+  # module-qualified WAT function name: $Mod.fun_arity ('.' separates module from fun;
+  # sanitize only emits [A-Za-z0-9_], so the single '.' is an unambiguous boundary).
+  def fq(m, f, a), do: "$#{sanitize(m)}.#{sanitize(f)}_#{a}"
+
+  # i32 (1/0) type-test expression for term `vw` (shared by the inline test forms and capture wrappers).
+  def type_test_i32(:is_atom, vw), do: "(ref.test (ref $atom) #{vw})"
+  def type_test_i32(tt, vw) when tt in [:is_binary, :is_bitstring], do: "(ref.test (ref $binary) #{vw})"
+  def type_test_i32(:is_tuple, vw), do: "(ref.test (ref $tuple) #{vw})"
+  def type_test_i32(:is_map, vw), do: "(ref.test (ref $map) #{vw})"
+  def type_test_i32(:is_pid, vw), do: "(ref.test (ref $pid) #{vw})"
+  def type_test_i32(:is_reference, vw), do: "(ref.test (ref $ref) #{vw})"
+  def type_test_i32(:is_function, vw), do: "(ref.test (ref $fun) #{vw})"
+  def type_test_i32(:is_float, vw), do: if(Process.get(:float), do: "(ref.test (ref $float) #{vw})", else: "(i32.const 0)")
+  def type_test_i32(:is_port, _vw), do: "(i32.const 0)"
+  def type_test_i32(:is_integer, vw), do: if(Process.get(:bignum), do: "(i32.or (i32.or (ref.test (ref i31) #{vw}) (ref.test (ref $i64) #{vw})) (ref.test (ref $big) #{vw}))", else: "(ref.test (ref i31) #{vw})")
+  def type_test_i32(:is_list, vw), do: "(i32.or (ref.is_null #{vw}) (ref.test (ref $cons) #{vw}))"
+  def type_test_i32(:is_boolean, vw), do: "(i32.or (ref.eq #{vw} (global.get $atom_true)) (ref.eq #{vw} (global.get $atom_false)))"
 end

@@ -4,8 +4,9 @@ A BEAM-bytecode → WasmGC compiler written in **Elixir**, consuming OTP's own *
 (no hand-rolled `.beam` decoder; typed registers normalized, so it ingests **default Elixir output**).
 Emits WAT; assembled with Binaryen; run on a WasmGC engine — the Cloudflare Workers substrate model.
 
-It's a small library under **`compiler/lib/`** (`Codegen.Common`, `Codegen.Runtime`, `Beam2Wasm`); the
-top-level **`beam2wasm.exs`** is a thin CLI shim, so `elixir beam2wasm.exs <beams>` works as shown below.
+It's a small library under **`compiler/lib/`** (`Codegen.Common` leaf helpers, `Codegen.Runtime` the WAT
+runtime library, `Codegen.Emit` the emit path, `Beam2Wasm` the orchestration); the top-level
+**`beam2wasm.exs`** is a thin CLI shim, so `elixir beam2wasm.exs <beams>` works as shown below.
 
 One compiler now compiles six programs, all validated against the Elixir VM:
 
