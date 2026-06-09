@@ -123,9 +123,12 @@ Key design points:
 
 ## 6. The compiler
 
-`compiler/beam2wasm.exs` is the working compiler (a single ~3,800-line `Beam2Wasm` module — it began at
-~320 lines and grew with each capability below; a staged split into modules is planned, see
-`compiler/REFACTOR_PLAN.md`). It reads one or more `.beam` files via `:beam_disasm`, merges their functions
+The compiler is a small Elixir **library** under `compiler/lib/` — `Codegen.Common` (shared leaf helpers),
+`Codegen.Runtime` (the hand-written WAT runtime library), and `Beam2Wasm` (the `run/1` orchestration + emit
+path) — with `compiler/beam2wasm.exs` as a thin CLI shim so `elixir beam2wasm.exs <beams>` still works.
+(It began as one ~320-line script and grew to ~3,740 with each capability below; the split keeps the same
+output — verified byte-identical. Further splitting `Codegen.Emit` out + full Mix packaging are tracked in
+`compiler/REFACTOR_PLAN.md`.) It reads one or more `.beam` files via `:beam_disasm`, merges their functions
 into one WasmGC module, and emits WAT.
 
 Lowering strategy:

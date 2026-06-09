@@ -1,9 +1,34 @@
-# beam2wasm.exs module-split plan (TODO 5.3 / 5.5)
+# beam2wasm module-split plan (TODO 5.3 / 5.5)
 
-`compiler/beam2wasm.exs` is one ~3760-line `Beam2Wasm` module. TODO 5.4 (dedup the i31 bounds
-into `@i31_lo`/`@i31_hi`) is **done**. The structural split (5.3) and the call-variant dedup (5.5)
-are **deliberately deferred** — this file records the analysis so they can be done safely as focused
-work rather than rushed under harness-only verification.
+## Status: the compiler is now a library (DONE), the Emit split + 5.5 remain
+
+`compiler/beam2wasm.exs` was one ~3740-line `Beam2Wasm` script. It is now a small library:
+
+```
+compiler/beam2wasm.exs        11 lines   — thin CLI shim (Code.require_file the lib/, call run/1)
+compiler/lib/codegen_common.ex   55      — Codegen.Common: shared leaf helpers (term_eq, sanitize, bin_literal)
+compiler/lib/codegen_runtime.ex 1481      — Codegen.Runtime: the hand-written WAT runtime library
+compiler/lib/beam2wasm.ex      2219      — Beam2Wasm: run/1 orchestration + the emit path
+```
+
+The split used `import` so call sites are unchanged; verified **byte-identical generated WAT** across
+all 109 harness programs (behavior preserved by construction) plus conformance 161/161, fuzz 33/33,
+gaps 19/20. The runtime cluster's only external deps were exactly {term_eq, sanitize, bin_literal}
+(AST-confirmed), which is why Codegen.Common is tiny.
+
+**Remaining (deferred, lower priority):**
+- **Split `Codegen.Emit` out of `lib/beam2wasm.ex`** — `compile_fun/2` + the opcode `case` + its emit
+  helpers, leaving `run/1` orchestration in `Beam2Wasm`. Same recipe: move funcs, `import Codegen.Common`
+  (the emit cluster also shares only term_eq/bin_literal with runtime), verify byte-identical WAT. This
+  drops `lib/beam2wasm.ex` to a focused ~1000-line orchestration module.
+- **5.5 call-variant dedup** — a `ret_value(ce, e)` helper for the recurring `call_ext`→`(local.set $x0 e)`
+  / tail-form→`(return e)` idiom (whereis, spawn_opt, apply, exit/2, …). This *changes* the WAT, so verify
+  with the harnesses (not byte-diff). ~30–40 lines.
+- **Full Mix packaging** (`mix.exs` + `mix wasm.compile`) — compiled modules in `_build` (faster than
+  re-`require_file` per invocation) + ExUnit. Tracked in ROADMAP as the productionization step; it would
+  change how the 13 harnesses invoke the compiler, so it's a deliberate, separate piece of work.
+
+## Original analysis (kept for the Emit split)
 
 ## Why deferred (the engineering call)
 
