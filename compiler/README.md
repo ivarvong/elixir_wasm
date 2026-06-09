@@ -35,10 +35,11 @@ x+115. This is "Durable Objects with OTP discipline," but the discipline is now 
 hand-written.
 
 ## What maps took
-- **Map term distinct from tuples.** A map is `(struct $map (field (ref $kv)))` wrapping a flat
-  `(array (mut (ref null eq)))` of `[k0,v0,k1,v1,…]`. Wrapping the array in a struct keeps `is_map`
-  (`ref.test $map`) and `is_tuple` (`ref.test $tuple`) from colliding (both would otherwise be arrays).
-- **`get_map_elements`** → linear scan (`$map_find_idx`, `ref.eq` on keys) per key; jump to the fail label
+- **Map term distinct from tuples.** A map is a **persistent weight-balanced BST** (Adams' algorithm)
+  of `$mnode` (key/val/left/right/size) — O(log n) get/put, key-sorted iteration. (It started as a flat
+  `[k0,v0,…]` array; the perf harness caught the resulting O(n²) bulk build and it was replaced — ~168×
+  faster at 10k keys.) The distinct node type also keeps `is_map` and `is_tuple` `ref.test`s from colliding.
+- **`get_map_elements`** → BST lookup (`$map_get`, `$term_compare` on keys) per key; jump to the fail label
   if any key is absent. **`put_map_assoc` / `put_map_exact`** → fold a copy-on-write `$map_put`
   (update-in-place-on-copy if present, grow-by-2 if absent) over the k/v list. **`is_map`** →
   `ref.test`. Map literals (`%{}` and constant maps) handled by `materialize`.
@@ -119,11 +120,12 @@ fallback when `EXPORTS` is unset (so the original demos build unchanged).
     curl 'http://127.0.0.1:8795/?op=upcase&s=hello%20from%20compiled%20elixir'
 
 ## Honest scope
-A deliberate slice. Maps are flat (O(n) lookup/update) — fine for small entity state, not the
-hash-array-mapped-trie real BEAM uses for large maps; `put_map_exact`'s badkey trap is elided (consistent
-with the compiler emitting `{:f,0}` when it proves the key present). Default arithmetic is small-int
-(i31); `BIGNUM=1` adds exact arbitrary precision for `+ - *` (see measurements). Only `trim` renumbers Y
-registers (not general `allocate`-into-a-live-frame).
+A deliberate slice. Maps are a **persistent weight-balanced BST** (O(log n) get/put; iteration is
+key-sorted — a documented delta from BEAM's >32-key HAMT order, see `ARCHITECTURE.md` §5 and
+`gaps/FINDINGS.md`); `put_map_exact`'s badkey trap is elided (consistent with the compiler emitting
+`{:f,0}` when it proves the key present). Arithmetic is **exact arbitrary-precision by default** (3-tier
+i31 → `$i64` → host BigInt; `BIGNUM=0` opts out to wrapping small-int). Only `trim` renumbers Y registers
+(not general `allocate`-into-a-live-frame).
 
 Binaries are **byte-aligned**: `bs_create_bin` and `bs_match` assume sizes/positions are multiples of 8
 (covers strings and byte data — the overwhelmingly common case), so non-byte-aligned bitstrings

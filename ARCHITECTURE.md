@@ -95,29 +95,38 @@ The prototype uses this exact representation (see `compiler/beam2wasm.exs`):
 | `[]` (nil) | `(ref.null none)` |
 | tuple | `(array (ref null eq))` via `array.new_fixed` |
 | atom | `(struct $atom (field i32))`, **interned once per distinct atom** as a global |
-| map | `(struct $map (field (ref $kv)))` wrapping a flat `[k0,v0,…]` mutable array |
+| map | a **persistent weight-balanced BST** (Adams' algorithm) of `$mnode` (key/val/left/right/size); O(log n) get/put |
 
 Key design points:
-- `[D]` **A map is a struct wrapping its array, not a bare array.** Otherwise `is_map` and `is_tuple`
-  both reduce to "is it an array?" and collide. The struct gives them distinct `ref.test` targets. (Same
-  reasoning would apply to any future array-shaped term, e.g. binaries.)
-- `[D]` **Equality is `ref.eq`.** On `i31` it is value equality; on interned atoms it is identity
-  equality (correct *because* atoms are interned). One instruction handles integer-eq and atom-eq
-  uniformly. (Bignum equality needs a tiered helper — not yet done; see ROADMAP.)
-- `[D]` **Integers are arbitrary-precision and exact** (fintech requirement). Tiered: i31 fast path;
-  `+`/`-`/`*` detect overflow (compute in i64, narrow back to i31 if it fits) and otherwise promote to a
-  boxed BigInt, demoting again when a result fits. `fact(50)` (65 digits) is bit-identical to the Elixir
-  VM. This is an opt-in compiler mode today; **the production default should be "exact, with type-driven
-  specialization"**: where `:beam_disasm`'s typed-register info proves an operand is a bounded small
-  integer, emit inline i32; only genuinely-polymorphic sites pay the tiered call. Exact by default, fast
-  by analysis — and the analysis is already in the IR.
+- `[D]` **A map is a BST, not a bare array.** (The prototype started with a flat `[k0,v0,…]` array — O(n)
+  per op, O(n²) bulk build; the perf harness caught it and it was replaced with a weight-balanced BST:
+  ~168× faster at 10k keys, see `perf/README.md`.) The struct/node type also gives `is_map` and `is_tuple`
+  distinct `ref.test` targets so they don't collide.
+- `[D]` **Map iteration order is key-sorted** (in-order BST walk). This is a *deliberate, documented delta*
+  from BEAM, which iterates ≤32-key maps in term order (agrees with us) but **>32-key maps in 16-ary HAMT
+  hash order** (an internal-hash implementation detail, not stable across OTP versions). Elixir documents map
+  order as *unspecified*; programs must not depend on it. This is the one boundary worth knowing — it was the
+  root cause of the one apparent "compiler lie" in the gap corpus (a program ranked a >32-key frequency map by
+  a non-total key); see `gaps/FINDINGS.md`.
+- `[D]` **Equality is `ref.eq`** for the fast path (i31 value-eq; interned-atom identity-eq), with a
+  `$term_compare` fallback for everything else. Bignum equality is **done**: rank-0 numbers route through a
+  tiered `$int_cmp` that delegates boxed values to the host `big.cmp` import, so two distinct equal-valued
+  `$big` structs compare equal.
+- `[D]` **Integers are arbitrary-precision and exact** (fintech requirement), and this is now the **default**
+  (set `BIGNUM=0` only for compiler experiments that want wrapping small-int arithmetic). Three tiers: `i31`
+  fast path → a `$i64` struct for 64-bit-fitting values → a boxed host BigInt beyond that, demoting again when
+  a result fits. `fact(50)` (65 digits) is bit-identical to the Elixir VM. Type-driven specialization is also
+  in: where `:beam_disasm`'s typed-register info proves an operand is a bounded small integer, the compiler
+  emits inline i32 and skips the tiered call — exact by default, fast by analysis.
 
 ---
 
 ## 6. The compiler
 
-`compiler/beam2wasm.exs` is the working prototype (single file, ~320 lines). It reads one or more
-`.beam` files via `:beam_disasm`, merges their functions into one WasmGC module, and emits WAT.
+`compiler/beam2wasm.exs` is the working compiler (a single ~3,800-line `Beam2Wasm` module — it began at
+~320 lines and grew with each capability below; a staged split into modules is planned, see
+`compiler/REFACTOR_PLAN.md`). It reads one or more `.beam` files via `:beam_disasm`, merges their functions
+into one WasmGC module, and emits WAT.
 
 Lowering strategy:
 - **Each BEAM function → one Wasm function.**
@@ -140,13 +149,19 @@ lists/tuples/maps), and the error terminators (`func_info/badmatch/case_end/if_e
 Each new program surfaced a few more real opcodes; this is the actual surface of *optimized* Elixir
 output, not a toy subset.
 
-Two opt-in modes (env vars), both leaving the default fast path untouched:
-- `REDS=<budget>` — inject a reduction check at each function entry (preemption, §8).
-- `BIGNUM=1` — route arithmetic through the tiered exact-integer helpers (§5).
+Env-var modes:
+- `BIGNUM` — exact tiered integers are **on by default**; set `BIGNUM=0` for wrapping small-int arithmetic.
+- `REDS=<budget>` — reduction-check budget at each function entry (preemption, §8).
+- `STUB=1` — unsupported opcodes/operands compile to a counted `(unreachable)` trap instead of failing the
+  build (the gap/conformance harnesses use this to *measure* coverage; an untranslated operand traps and is
+  counted, never silently produces a wrong value).
+- `EXPORTS="name:argtypes->ret; …"` — generate host-callable export wrappers (int/float/atom/bin/list/term).
 
-What the compiler does **not** yet do (ROADMAP): binaries/bitstrings, the full opcode tail, tiered
-comparisons in BIGNUM mode, `allocate`-into-a-live-frame renumbering, function-level DCE, and proper
-multi-module namespacing (it currently relies on no `fun/arity` collisions across merged modules).
+Much of the original "not yet" list is **done**: binaries/bitstrings (byte-aligned), the realistic opcode
+tail, tiered bignum comparisons, function-level DCE (the 10MB-cap lever), multi-module namespacing,
+closures/`apply`, exceptions (Wasm EH), floats + `:math`. Remaining gaps (see `gaps/FINDINGS.md`): protocols,
+`Stream`, in-Wasm `Regex`, `:sets`/`MapSet`, non-byte-aligned bitstrings, and a runtime-variable
+`receive … after` timeout.
 
 ---
 
@@ -177,10 +192,14 @@ a **suspending `yield` import** when the budget hits zero, then resets it. Measu
 `fib(32)` vs 0× during a blocking one. Tail-recursive loops are covered because each iteration re-enters
 the function.
 
-**What's modeled:** the `yield` import resolves via a microtask; a production scheduler yields to a real
-**per-process run queue** and dispatches the next ready process. The JSPI suspend/resume mechanism is the
-same; only the policy + per-process budget (vs today's shared global) are to be built. **This is the
-single most important remaining runtime component.**
+**State of the scheduler (`runtime/scheduler.mjs`):** a real **run queue** now exists — a single fair FIFO
+(`{pid, kind}`) so no class of work (new spawns / resumed-on-message / preempted) starves another. On top of
+the JSPI suspend/resume substrate it implements `spawn`/`spawn_link`/`spawn_opt`, `send`, selective `receive`
+(with finite `after N` timers), `self`, links + `trap_exit` + exit-signal propagation, monitors + `:DOWN`,
+a named registry, the process dictionary, and `Process.exit/2`. All of this is verified bit-exact vs the VM
+in the `processes`/`genserver`/`supervisor`/`registry`/`pid-ref`/`kill`/`recv-after` conformance categories.
+**Still modeled/open:** the reduction budget is a shared global rather than per-process; cross-isolate
+dispatch (DOs) and an isolate-pool deployment are not built; runtime-variable `after` timeouts still block.
 
 ---
 
@@ -188,9 +207,16 @@ single most important remaining runtime component.**
 
 `[D]` **Terminate processes by *unwinding*, never by dropping references.** A suspended JSPI stack is
 engine-rooted; simply abandoning it leaks (spike B measured ~41MB/gen growth on the abandon path). To
-kill a process, deliver a kill that **rejects the parked promise**, unwinding the stack. Spike B
-confirmed Wasm exception handling and JSPI compose on workerd, and that the kill path plateaus (pooled)
-while the abandon path grows.
+kill a process, deliver a kill that **rejects the parked promise**, unwinding the stack.
+
+This is now **implemented in the real scheduler**, not just the spike: park points stash the promise's
+`reject`; `finish()` unwinds a dying process's parked stack with a `ProcKill` rejection (which surfaces as
+a non-`$exc` exception, so compiled `try/rescue` — catching only the `$exc` tag — can't trap it, exactly
+like BEAM's untrappable `exit(pid, :kill)`), and abnormal link-cascade routes through the same path so a
+linked parked waiter is unwound rather than abandoned. Dead process records and spent monitors are also
+reclaimed. Verified end-to-end: the `kill` conformance category (incl. killing a process that has actually
+parked), and `runtime/kill_memory_test.exs` — 9,900 spawned-then-killed parked processes add **0.03 MB**
+(vs tens of MB if their stacks/records leaked).
 
 ---
 

@@ -8,15 +8,20 @@ are what was validated; newer should work with the noted caveats.
 | Tool | Version used | Why / caveats |
 |------|--------------|---------------|
 | **Node.js** | 24.16.0 (V8 13.6) | Stable JSPI **and** WasmGC. Run with `--experimental-wasm-jspi`. Earlier Node (v22) had crashy JSPI — avoid for the preemption work. |
-| **Binaryen** (`wasm-as`) | version_130 | Assembles WAT→Wasm. **Always pass `-all`** (enables GC, i31, exceptions, tail calls, etc.). Older Binaryen may lack `array.copy` / `struct.new` in global initializers, both of which we use. |
+| **Binaryen** (`wasm-as`) | version_130 | Assembles WAT→Wasm. **Pass `-all --disable-custom-descriptors`** (`-all` enables GC/i31/EH/tail-calls; the flag suppresses the `exact` heap types newer Binaryen emits under `-all` that stock Node 24 rejects). Older Binaryen may lack `array.copy` / `struct.new` in global initializers. |
 | **workerd** | build 2026-06-05 | Cloudflare's runtime. Durable Objects work locally without `--experimental`; JSPI features need `compatibilityFlags=["experimental"]` + `--experimental`. WasmGC is on by default in this build. |
-| **Erlang/OTP** | 25 (erts 13.2.2.5) | Provides `erlc`, `erl`, and `:beam_disasm` / `:beam_lib`. |
-| **Elixir** | 1.14.0 (on OTP 25) | `elixirc`, `elixir`, `iex`. The compiler script runs under this. |
+| **Erlang/OTP** | 25–27 (verified on 27) | Provides `erlc`, `erl`, and `:beam_disasm` / `:beam_lib`. |
+| **Elixir** | 1.14–1.17 (verified on 1.17.1) | `elixirc`, `elixir`, `iex`. The compiler script runs under this. |
 
 Notes:
 - `:beam_disasm` normalizes typed registers, so **compile Elixir with default flags** — no
   `+no_type_opt` / `ERL_COMPILER_OPTIONS` needed (an earlier hand-decoder required them).
 - WAT is assembled with Binaryen, not `wabt` — the bundled `wabt` could not assemble WasmGC.
+- **Toolchain discovery is portable** (no hardcoded paths): the harnesses resolve `node` and `wasm-as`
+  via `tooling.exs`. It honors `NODE=…` / `WASM_AS=…` overrides, else auto-discovers a Node 24+ install
+  (preferring the 24.x line) from `$PATH`/nvm/asdf, and uses the canonical `wasm-as` flags above. A wrong
+  or missing toolchain fails fast with an actionable message. The harnesses also kill a runaway `node`
+  after a timeout instead of hanging.
 
 ## Repo layout
 

@@ -22,10 +22,13 @@ modeled vs. still open.
 | Substrate (JSPI stacks, kill/unwind, shared-heap GC) | **proven on workerd/V8** | `spikes/01-jspi-economics` |
 | Feasibility gate (size + perf go/no-go) | **GREEN** | `spikes/02-feasibility-gate` |
 | Frontend: real Elixir → WasmGC via OTP's `:beam_disasm` | **working compiler** | `compiler/` |
-| Non-trivial programs (merge sort, an interpreter, a map state machine) | **compiled, validated vs Elixir VM** | `compiler/examples` |
+| Correctness vs the Elixir VM (arith, bignum, floats, strings, maps, exceptions, OTP processes) | **161/161 bit-exact** | `conformance/` |
+| Differential fuzzing (a full ledger service, random ops) + 20-program gap corpus | **33/33 + 19/20 provably correct, 0 lies** | `fuzz/`, `gaps/` |
+| Real process runtime: spawn/send/receive, links/monitors, GenServer/Supervisor, kill-by-unwind, fairness | **working (JSPI scheduler)** | `runtime/` |
+| Real unmodified hex libs (`Jason` encode, `Req` + `:crypto`) on WasmGC | **bit-exact** | `jason-demo/`, `demo/` |
 | Running in a Durable Object on workerd, durable across restart | **working** | `durable-object/` |
 | Cold start, preemption, arbitrary-precision integers | **measured** | `measurements/` |
-| Per-process scheduler, throughput/latency/cost at scale | **open — needs real Cloudflare** | `ROADMAP.md` |
+| Throughput / tail latency / cost-per-actor at scale | **open — needs real Cloudflare** | `ROADMAP.md` |
 
 **One-line takeaways from the measurements:** per-DO instantiation ~10µs (workerd-confirmed);
 reduction-counted preemption suspends the Wasm stack via JSPI at +14% worst-case overhead and prevents
@@ -37,12 +40,22 @@ the Elixir VM).
 ## Read in this order
 
 1. **`ARCHITECTURE.md`** — the design and every standing decision with rationale (the *why*). Start here.
-2. **`compiler/README.md`** — how the compiler works, what BEAM opcodes it covers, the two opt-in modes.
-3. **`durable-object/README.md`** — the compiled state machine running as a DO on workerd.
-4. **`measurements/README.md`** — the three runtime guarantees, measured.
-5. **`spikes/`** — the substrate validation and feasibility work the whole thing rests on.
-6. **`ROADMAP.md`** — phased build plan: proven / modeled / open, effort buckets, priorities.
-7. **`BUILD.md`** — exact toolchain and commands to reproduce every result.
+2. **`compiler/README.md`** — how the compiler works and what BEAM opcodes it covers.
+3. **`conformance/`** — the differential safety net: 161 cases run on WasmGC **and** the real Elixir VM,
+   diffed bit-exact (arith, bignum, floats, strings, maps, exceptions, processes, real OTP GenServer/Supervisor).
+   The single best place to gauge what actually works.
+4. **`runtime/`** — the JSPI process scheduler: spawn/send/selective-receive, fair dispatch, links/monitors,
+   `trap_exit`, kill-by-unwind, `Process.exit/2`, finite `receive … after`.
+5. **`fuzz/`** & **`gaps/`** — a differential fuzzer (random ledger ops) and 20 realistic programs; together
+   they enumerate the remaining stdlib gaps and keep the compiler honest (it traps, it doesn't lie).
+6. **`perf/`** — attribution + scaling harnesses (these found the map O(n²) and the bignum-boundary tax).
+7. **`interp/`**, **`jason-demo/`**, **`demo/`** — a self-hosted BEAM interpreter (hot-reload seed); real
+   unmodified `Jason` encoding; real `Req` + `:crypto` — all on WasmGC, bit-exact vs the VM.
+8. **`durable-object/`** & **`durable-genserver/`** — the compiled state machine / a real GenServer as a
+   Durable Object, state surviving restart (the product thesis, demonstrated).
+9. **`measurements/README.md`** — the runtime guarantees, measured.
+10. **`spikes/`** — the substrate validation the whole thing rests on.
+11. **`ROADMAP.md`** & **`BUILD.md`** — phased build plan, and the exact toolchain/commands to reproduce.
 
 ---
 

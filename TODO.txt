@@ -5,6 +5,44 @@ document: it assumes you have the repo and nothing else. Read section 0 first;
 it tells you how to prove any change you make is safe.
 ================================================================================
 
+================================================================================
+STATUS — EXECUTED 2026-06-09 (see `git log` for per-item commits)
+--------------------------------------------------------------------------------
+Baseline at start: conformance 147/147, fuzz 33/33, gaps 18/20 (p01 was a LIE).
+Now:               conformance 161/161, fuzz 33/33, gaps 19/20 (0 lies).
+
+  TODO 1 (docs) .................... DONE  — README/ARCHITECTURE/ROADMAP/compiler
+                                            README/BUILD updated to current reality.
+  TODO 2 (toolchain paths/flags) .. DONE  — new tooling.exs; all 13 harness files;
+                                            --disable-custom-descriptors canonical.
+  TODO 3 (shared host imports) ..... DONE  — runtime/imports.mjs; 5 runners; killed
+                                            the str-divergence bug class.
+  TODO 4 (scheduler) ............... DONE  — kill-by-unwind + record/monitor cleanup,
+                                            fair FIFO queue, Process.exit/2, finite
+                                            receive-after timers. +8 conformance cases
+                                            + runtime/kill_memory_test.exs (leak proof).
+  TODO 5.1/5.2 (compiler fixes) .... DONE  — no silent-nil operand stub; error context.
+  TODO 5.4 (i31 bounds dedup) ...... DONE.
+  TODO 5.3/5.5 (module split) ...... DEFERRED w/ plan — compiler/REFACTOR_PLAN.md.
+                                            Pure maintainability on a correct, fully-
+                                            tested compiler; staged for focused work
+                                            under the byte-identical-WAT gate. The
+                                            "self-contained" builtins actually reach 4
+                                            helpers + 8 pdict keys (see the plan).
+  TODO 6.1 (harness timeouts) ...... DONE  — Tooling.cmd kills runaway node.
+  TODO 6.2 (float conformance) ..... DONE  — IEEE-754-bit `floats` category, 6/6.
+  TODO 6.3 (fuzz op-naming) ........ DONE  — Ledger.op_name names the diverging op.
+
+  FOUND + FIXED (not in the original list): the p01 "compiler lie" was reliance on
+  unspecified map iteration order (Wasm key-sorted vs BEAM's >32-key HAMT order — NOT
+  a miscompile; map contents are bit-exact). Fixed the test to be total-ordered;
+  documented the boundary (gaps/FINDINGS.md, ARCHITECTURE.md §5). 0 lies now.
+
+  The only substantive item not executed is the 5.3 module split (deliberately
+  staged, not abandoned — see REFACTOR_PLAN.md). Everything below is the original
+  plan, kept verbatim for reference.
+================================================================================
+
 --------------------------------------------------------------------------------
 0. CONTEXT YOU NEED BEFORE TOUCHING ANYTHING
 --------------------------------------------------------------------------------

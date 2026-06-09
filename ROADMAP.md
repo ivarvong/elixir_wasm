@@ -94,22 +94,26 @@ dependency and value; the two keystones are called out first.
 
 ## Phase 2 — Runtime base
 
-- `[done→harden]` **Scheduler + run queue** (keystone, see top). **R1 built** (`runtime/scheduler.mjs`):
-  cooperative scheduler over JSPI stacks, spawn/send/selective-receive/self, mailboxes, verified vs the
-  VM. Harden: per-process reduction budget + preemption integration + fair dispatch + `receive` timers.
-- `[open]` **Term library hardening** — the hand-WAT helpers (`$cons`/`$map`/`$big`/atoms) generalized,
-  plus deep equality, ordering (Erlang term order), hashing.
-- `[open]` **BIF shims** — `:crypto` → WebCrypto, `:re` → a host regex shim, `:unicode`/string ops,
-  `:maps`/`:lists` builtins, `:erlang` core. In-isolate `:ets` over a WasmGC map/table.
-- `[open]` **Process plumbing** — links, monitors, `Process.flag(:trap_exit, …)`, a `Registry`, and
-  supervision trees mapped onto spawn + kill-via-unwind (§9) + DO-backed restart.
+- `[done→harden]` **Scheduler + run queue** (keystone, see top). Built (`runtime/scheduler.mjs`): JSPI
+  scheduler with a **fair FIFO run queue**, spawn/send/selective-receive/self, mailboxes, **finite
+  `receive … after` timers**, verified vs the VM. Harden remaining: per-process reduction budget (today's
+  is a shared global) and runtime-variable `after` timeouts.
+- `[open]` **Term library hardening** — the hand-WAT helpers (`$cons`/`$map`/`$big`/atoms) generalized;
+  deep equality + Erlang term order are **done** (`$term_compare`/`$term_rank`), hashing still open.
+- `[open]` **BIF shims** — much done: `:crypto`→WebCrypto and `:re`→host regex (`demo/`, the shared
+  `runtime/imports.mjs`), `:unicode`/string case-mapping, `:maps`/`:lists` builtins, `:math`→libm. Open:
+  broader `:erlang` core and in-isolate `:ets`.
+- `[done]` **Process plumbing** — links, monitors, `Process.flag(:trap_exit, …)`, `Process.exit/2`, a named
+  registry, and a restarting Supervisor — all on spawn + kill-via-unwind (§9). Verified in the conformance
+  `supervisor`/`registry`/`kill` categories.
 
 ## Phase 3 — Concurrency productization
 
 - `[modeled]` **JSPI process pool** — spawn = promising-call on a function-table slot; mailbox + `receive`
   = suspend on a promise; measured economics in spike 1.
-- `[done→harden]` **Kill via unwinding** — reject the parked promise; spike B proved it composes; harden
-  into the supervisor path.
+- `[done]` **Kill via unwinding** — reject the parked promise (untrappable `ProcKill`); wired into the real
+  scheduler's `finish()`/link-cascade with dead-record + monitor cleanup. Memory-verified at scale
+  (`runtime/kill_memory_test.exs`: 9,900 spawned-then-killed parked processes add 0.03 MB).
 - `[open]` **Cross-isolate messaging** — PIDs → DOs; `send` across isolates = ETF (`term_to_binary`) over
   workerd cap'n-proto RPC; `send_after` = DO alarms. Needs binaries (Phase 1) for ETF.
 
