@@ -272,6 +272,102 @@ defmodule Conf do
           %{fn: "route", sig: {[:bin], :int}, inputs: [["GET /v1/orders"], ["GET /v1/orders/active"], ["POST /v1/orders"], ["PATCH /v1/orders"], ["DELETE /v1/orders"], ["GET /v1/order"]]},
           %{fn: "combo", sig: {[:bin, :bin], :int}, inputs: [["SKU-BOOK", "GET /v1/orders"], ["SKU-GPU", "POST /v1/orders"], ["SKU-UNKNOWN", "DELETE /v1/orders"]]}
         ]},
+      # ---- RAISE: real `raise`/`rescue` with real exception STRUCTS + erlang error/throw classes ----
+      %{cat: "raise", proc: true, extra: [Kernel, Exception, ArgumentError, RuntimeError, Enum, Map, Keyword, :lists, :maps], src: """
+        defmodule RaiseDemo do
+          def rescue_arg(x) do
+            try do
+              if x > 0, do: raise(ArgumentError, "bad arg"), else: x
+            rescue
+              e in ArgumentError -> byte_size(e.message) + 100
+            end
+          end
+          def rescue_runtime(x) do
+            try do
+              raise "boom-" <> :erlang.integer_to_binary(x)
+            rescue
+              e in RuntimeError -> byte_size(e.message)
+            end
+          end
+          def erlang_error(x) do
+            try do
+              :erlang.error({:badthing, x})
+            catch
+              :error, {:badthing, v} -> v * 2
+            end
+          end
+          def throw_catch(x) do
+            try do
+              throw {:ball, x}
+            catch
+              {:ball, v} -> v + 7
+            end
+          end
+          def struct_bang(x) do
+            e = Kernel.struct!(%ArgumentError{}, message: "zz")
+            byte_size(e.message) + x
+          end
+        end
+        """, cases: [
+          %{fn: "rescue_arg", sig: {[:int], :int}, inputs: [[7], [0]]},
+          %{fn: "rescue_runtime", sig: {[:int], :int}, inputs: [[12]]},
+          %{fn: "erlang_error", sig: {[:int], :int}, inputs: [[21]]},
+          %{fn: "throw_catch", sig: {[:int], :int}, inputs: [[5]]},
+          %{fn: "struct_bang", sig: {[:int], :int}, inputs: [[10]]}
+        ]},
+      # ---- TERM PRIMITIVES: cmp_term, base-N int<->text (bignum-safe), make_ref ----
+      %{cat: "term-prims", extra: [Enum, :lists], src: """
+        defmodule TermPrims do
+          def cmp(_x) do
+            :erts_internal.cmp_term(1, :a) + :erts_internal.cmp_term(:a, :a) * 10 +
+              :erts_internal.cmp_term({2}, [1]) * 100
+          end
+          def i2b(x) do
+            a = :erlang.integer_to_binary(x, 16)
+            b = :erlang.integer_to_binary(99_999_999_999_999_999_999)
+            c = :erlang.integer_to_binary(-x)
+            byte_size(a) + byte_size(b) * 10 + byte_size(c) * 100
+          end
+          def i2l(x), do: length(:erlang.integer_to_list(x, 2))
+          def l2i(_x), do: :erlang.list_to_integer(~c"-12345") + :erlang.list_to_integer(~c"ff", 16)
+          def mkref(_x), do: (if is_reference(make_ref()), do: 1, else: 0)
+        end
+        """, cases: [
+          %{fn: "cmp", sig: {[:int], :int}, inputs: [[0]]},
+          %{fn: "i2b", sig: {[:int], :int}, inputs: [[255], [4095]]},
+          %{fn: "i2l", sig: {[:int], :int}, inputs: [[7], [1024]]},
+          %{fn: "l2i", sig: {[:int], :int}, inputs: [[0]]},
+          %{fn: "mkref", sig: {[:int], :int}, inputs: [[0]]}
+        ]},
+      # ---- REGEX: the full host-shimmed surface (run/scan/match?/escape/split/replace/compile!) ----
+      %{cat: "regex", extra: [Enum, :lists], src: """
+        defmodule RegexDemo do
+          def match_q(_), do: (if Regex.match?(~r/\\d+/, "ab12"), do: 1, else: 0) + (if Regex.match?(~r/zz/, "ab"), do: 10, else: 20)
+          def scan(_), do: Regex.scan(~r/(\\w)(\\d)/, "a1 b2 c3") |> Enum.map(&Enum.join(&1, ",")) |> Enum.join(";")
+          def escape(_), do: Regex.escape("a.b*c?(d)[e]|f#g-h i")
+          def split2(_), do: Regex.split(~r/,+/, "a,b,,c") |> Enum.join("|")
+          def replace_first(_), do: Regex.replace(~r/a/, "banana", "X", global: false)
+          def replace_all(_), do: Regex.replace(~r/a/, "banana", "X")
+          def replace_fn1(_), do: Regex.replace(~r/\\d+/, "a1b22c", fn m -> "<" <> m <> ">" end)
+          def replace_fn2(_), do: Regex.replace(~r/(\\w)\\d/, "a1-b2", fn _m, c1 -> c1 <> c1 end)
+          def compile_rt(x), do: (if Regex.match?(Regex.compile!("\\\\d{" <> :erlang.integer_to_binary(x) <> "}"), "abc123"), do: 5, else: 9)
+          def run_idx(_) do
+            [{o, l}] = Regex.run(~r/\\d+/, "abc123def", return: :index)
+            o * 10 + l
+          end
+        end
+        """, cases: [
+          %{fn: "match_q", sig: {[:int], :int}, inputs: [[0]]},
+          %{fn: "scan", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "escape", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "split2", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "replace_first", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "replace_all", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "replace_fn1", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "replace_fn2", sig: {[:int], :bin}, inputs: [[0]]},
+          %{fn: "compile_rt", sig: {[:int], :int}, inputs: [[2], [9]]},
+          %{fn: "run_idx", sig: {[:int], :int}, inputs: [[0]]}
+        ]},
       # ---- FLOATS: f64 register file + :math.* host (libm) imports; bit-exact vs the VM ----
       %{cat: "floats", src: """
         defmodule FloatOps do

@@ -75,9 +75,46 @@ export const binCodec = (getExports) => {
 export const makeStr = (getExports) => {
   const { rdBin, wrBin, wrBytes } = binCodec(getExports);
 
+  // PCRE -> JS RegExp translation (the documented NIF-fidelity boundary, maximized):
+  // - Elixir regex OPTS map to JS flags (i/m/s/u); x (extended) strips unescaped whitespace +
+  //   #-comments outside character classes (JS has no x flag).
+  // - PCRE-only syntax JS rejects: (?'name'...) -> (?<name>...); \A -> ^; \z/\Z -> $;
+  //   \h -> [ \t]; \R -> any-newline alternation.
+  const pcre2js = (src, opts, extraFlags = "") => {
+    let flags = extraFlags;
+    // NB: PCRE's :unicode is deliberately NOT mapped to JS `u` — PCRE default is byte-mode and JS
+    // non-u mode is the closer (and escape-tolerant) semantics.
+    for (const f of ["i", "m", "s"]) if (opts.includes(f) && !flags.includes(f)) flags += f;
+    let s = src;
+    if (opts.includes("x")) {
+      let out = "", inClass = false;
+      for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === "\\") { out += c + (s[i + 1] ?? ""); i++; continue; }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        if (!inClass) {
+          if (c === "#") { while (i < s.length && s[i] !== "\n") i++; continue; }
+          if (/\s/.test(c)) continue;
+        }
+        out += c;
+      }
+      s = out;
+    }
+    s = s.replace(/\(\?'([^']+)'/g, "(?<$1>");
+    s = s.replace(/\\A/g, "^").replace(/\\z/g, "$").replace(/\\Z/g, "$");
+    s = s.replace(/\\h/g, "[ \\t]").replace(/\\R/g, "(?:\\r\\n|\\r|\\n)");
+    s = s.replace(/\\#/g, "#").replace(/\\ /g, " ");   // PCRE x-mode escapes JS rejects
+    // PCRE branch-reset (?|...) -> (?:...). Exact when the FIRST alternative participates (shared
+    // numbering); a later alternative shifts capture positions — a documented fidelity edge.
+    s = s.replace(/\(\?\|/g, "(?:");
+    return new RegExp(s, flags);
+  };
+  const jsre = (patB, optsB, extraFlags = "") => pcre2js(rdBin(patB), rdBin(optsB), extraFlags);
+
   // Regex.split -> JS .split. Frame parts as <<count:32, (len:32, bytes)...>> big-endian.
-  const re_split = (patB, subjB) => {
-    const parts = rdBin(subjB).split(new RegExp(rdBin(patB)));
+  const re_split = (patB, optsB, subjB) => {
+    const parts = rdBin(subjB).split(jsre(patB, optsB));
     const chunks = parts.map((p) => encU.encode(p));
     const total = 4 + chunks.reduce((s, c) => s + 4 + c.length, 0);
     const buf = new Uint8Array(total);
@@ -96,8 +133,8 @@ export const makeStr = (getExports) => {
   // Regex.run -> JS .match. Frame: <<matched:8, count:32, (len:32, bytes)...>>. Trailing
   // non-participating groups are dropped; remaining undefined groups become empty strings
   // (matches Erlang :re.run / Regex.run semantics).
-  const re_run = (patB, subjB) => {
-    const m = rdBin(subjB).match(new RegExp(rdBin(patB)));
+  const re_run = (patB, optsB, subjB) => {
+    const m = rdBin(subjB).match(jsre(patB, optsB));
     if (!m) return wrBytes(new Uint8Array([0]));
     const caps = Array.from(m);
     while (caps.length > 1 && caps[caps.length - 1] === undefined) caps.pop();
@@ -120,9 +157,9 @@ export const makeStr = (getExports) => {
   // Regex.run(re, subj, return: :index): match positions as BYTE offsets. Frame:
   // <<matched:8, count:32, (off:32, len:32)...>> for [full_match, captures...]; non-participating
   // group -> (0xFFFFFFFF, 0) so the WAT can emit {-1,0} like :re. No match -> <<0>>.
-  const re_run_index = (patB, subjB) => {
+  const re_run_index = (patB, optsB, subjB) => {
     const subj = rdBin(subjB);
-    const m = new RegExp(rdBin(patB), "d").exec(subj);
+    const m = jsre(patB, optsB, "d").exec(subj);
     if (!m) return wrBytes(new Uint8Array([0]));
     const blen = (s) => encU.encode(s).length; // UTF-16 index -> byte offset
     let idx = Array.from(m.indices);
@@ -157,8 +194,53 @@ export const makeStr = (getExports) => {
     }
     return out;
   };
-  const re_replace = (patB, subjB, replB) =>
-    wrBin(rdBin(subjB).replace(new RegExp(rdBin(patB), "g"), elixirReplToJs(rdBin(replB))));
+  const re_replace = (patB, optsB, subjB, replB, global) =>
+    wrBin(rdBin(subjB).replace(jsre(patB, optsB, global ? "g" : ""), elixirReplToJs(rdBin(replB))));
+
+  // Regex.replace with a FUNCTION replacement: per match, call back into the module's exported
+  // re_fun_call (which dispatches on the closure's arity: fn(match) or fn(match, cap1)).
+  const re_replace_fun = (patB, optsB, subjB, funRef, global) => {
+    const re = jsre(patB, optsB, global ? "g" : "");
+    const ncaps = new RegExp(re.source + "|").exec("").length - 1;
+    const out = rdBin(subjB).replace(re, (...args) => {
+      const m = args[0];
+      const cap1 = ncaps >= 1 && args[1] !== undefined ? args[1] : "";
+      return rdBin(getExports().re_fun_call(funRef, wrBin(m), wrBin(cap1), ncaps));
+    });
+    return wrBin(out);
+  };
+
+  // Regex.match?/2 -> boolean i32.
+  const re_test = (patB, optsB, subjB) => (jsre(patB, optsB).test(rdBin(subjB)) ? 1 : 0);
+
+  // Regex.scan/2: ALL matches. Frame: <<nmatches:32, (ncaps:32, (len:32, bytes)...)...>>; each match
+  // emits [full, caps...] with a non-participating group as "" (Regex.scan semantics, unlike run's nil).
+  const re_scan = (patB, optsB, subjB) => {
+    const re = jsre(patB, optsB, "g");
+    const s = rdBin(subjB);
+    const matches = [];
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      matches.push(Array.from(m, (c) => (c === undefined ? "" : c)));
+      if (m[0] === "") re.lastIndex++;        // avoid infinite loop on empty matches
+    }
+    const enc = matches.map((caps) => caps.map((c) => encU.encode(c)));
+    const total = 4 + enc.reduce((s1, caps) => s1 + 4 + caps.reduce((s2, c) => s2 + 4 + c.length, 0), 0);
+    const buf = new Uint8Array(total);
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(0, enc.length);
+    let o = 4;
+    for (const caps of enc) {
+      dv.setUint32(o, caps.length);
+      o += 4;
+      for (const c of caps) { dv.setUint32(o, c.length); o += 4; buf.set(c, o); o += c.length; }
+    }
+    return wrBytes(buf);
+  };
+
+  // Regex.escape/1 — Elixir's exact escape set: regex metachars, backslash, and whitespace,
+  // each prefixed with a backslash (the whitespace char itself is kept, prefixed).
+  const re_escape = (b) => wrBin(rdBin(b).replace(/[.^$*+?()[\]{}|#\\\s-]/g, (c) => "\\" + c));
 
   return {
     upcase: (b) => wrBin(rdBin(b).toUpperCase()),
@@ -172,6 +254,10 @@ export const makeStr = (getExports) => {
     re_run,
     re_run_index,
     re_replace,
+    re_replace_fun,
+    re_test,
+    re_scan,
+    re_escape,
   };
 };
 

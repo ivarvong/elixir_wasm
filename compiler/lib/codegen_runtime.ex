@@ -829,6 +829,8 @@ defmodule Codegen.Runtime do
         """
           (func $erlang.integer_to_binary_1 (param $x (ref null eq)) (result (ref null eq))
             (local $n i32) (local $neg i32) (local $len i32) (local $t i32) (local $d (ref $bytes)) (local $i i32)
+            (if (i32.eqz (ref.test (ref i31) (local.get $x)))
+              (then (return_call $erlang.integer_to_binary_2 (local.get $x) (ref.i31 (i32.const 10)))))
             (local.set $n (i31.get_s (ref.cast (ref i31) (local.get $x))))
             (if (i32.eqz (local.get $n)) (then
               (local.set $d (array.new_default $bytes (i32.const 1)))
@@ -849,6 +851,15 @@ defmodule Codegen.Runtime do
               (local.set $n (i32.div_u (local.get $n) (i32.const 10)))
               (local.set $i (i32.sub (local.get $i) (i32.const 1))) (br $fl)))
             (struct.new $binary (local.get $d)))\
+        """,
+      # maps:update/3 — replace an EXISTING key's value; {:badkey, K} error if absent (what
+      # Kernel.struct!/2 relies on to validate field names).
+      "$maps.update_3" =>
+        """
+          (func $maps.update_3 (param $k (ref null eq)) (param $v (ref null eq)) (param $m (ref null eq)) (result (ref null eq))
+            (if (i32.eqz (call $map_has (local.get $m) (local.get $k)))
+              (then (drop (call $erlang.error_1 (array.new_fixed $tuple 2 (global.get $atom_badkey) (local.get $k)))) (unreachable)))
+            (return_call $map_put (local.get $m) (local.get $k) (local.get $v)))\
         """,
       # maps:to_list/1 — [{k,v}, …] in key-sorted order (the kv array is kept sorted). Walk from
       # the last pair backward, prepending, so the result list is ascending by key.
@@ -1067,22 +1078,28 @@ defmodule Codegen.Runtime do
           (func $erlang.integer_to_list_1 (param $n (ref null eq)) (result (ref null eq))
             (ref.null none))\
         """,
+      # list_to_integer/1,2 — charlist -> $binary, then delegate to the mode-gated binary_to_integer/2
+      # (one parsing implementation: bignum-safe in exact mode, base-aware, consistent digit checks).
       "$erlang.list_to_integer_1" =>
         """
           (func $erlang.list_to_integer_1 (param $l (ref null eq)) (result (ref null eq))
-            (local $neg i32) (local $acc (ref null eq)) (local $c i32)
-            (local.set $acc (ref.i31 (i32.const 0)))
-            (if (ref.test (ref $cons) (local.get $l)) (then
-              (local.set $c (i31.get_s (ref.cast (ref i31) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))))
-              (if (i32.eq (local.get $c) (i32.const 45))
-                (then (local.set $neg (i32.const 1)) (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))))))
-            (block $done (loop $lp
-              (br_if $done (i32.eqz (ref.test (ref $cons) (local.get $l))))
-              (local.set $c (i31.get_s (ref.cast (ref i31) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))))
-              (local.set $acc (call $int_add (call $int_mul (local.get $acc) (ref.i31 (i32.const 10))) (ref.i31 (i32.sub (local.get $c) (i32.const 48)))))
-              (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
-              (br $lp)))
-            (if (result (ref null eq)) (local.get $neg) (then (call $int_sub (ref.i31 (i32.const 0)) (local.get $acc))) (else (local.get $acc))))\
+            (return_call $erlang.list_to_integer_2 (local.get $l) (ref.i31 (i32.const 10))))\
+        """,
+      "$erlang.list_to_integer_2" =>
+        """
+          (func $erlang.list_to_integer_2 (param $l (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+            (local $n i32) (local $t (ref null eq)) (local $d (ref $bytes)) (local $i i32)
+            (local.set $t (local.get $l))
+            (block $c (loop $cl (br_if $c (i32.eqz (ref.test (ref $cons) (local.get $t))))
+              (local.set $n (i32.add (local.get $n) (i32.const 1)))
+              (local.set $t (struct.get $cons 1 (ref.cast (ref $cons) (local.get $t)))) (br $cl)))
+            (local.set $d (array.new_default $bytes (local.get $n)))
+            (local.set $t (local.get $l))
+            (block $f (loop $fl (br_if $f (i32.ge_u (local.get $i) (local.get $n)))
+              (array.set $bytes (local.get $d) (local.get $i) (i31.get_s (ref.cast (ref i31) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $t))))))
+              (local.set $t (struct.get $cons 1 (ref.cast (ref $cons) (local.get $t))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $fl)))
+            (return_call $erlang.binary_to_integer_2 (struct.new $binary (local.get $d)) (local.get $base)))\
         """,
       "$Elixir_46_Process.get_2" =>
         """
@@ -1108,44 +1125,50 @@ defmodule Codegen.Runtime do
           (func $erlang.list_to_atom_1 (param $l (ref null eq)) (result (ref null eq))
             (global.get $atom_undefined))\
         """,
-      # binary_to_integer/2 (base-aware) and /1 (base 10). Bignum-safe: accumulates through the tiered
-      # int helpers (acc = acc*base + digit on term values), so results above i31/i64 promote to $big
-      # instead of truncating. Digits 0-9/A-Z/a-z; an out-of-range digit or empty input traps (badarg).
-      "$erlang.binary_to_integer_2" =>
-        """
-          (func $erlang.binary_to_integer_2 (param $bin (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
-            (local $b (ref $bytes)) (local $n i32) (local $i i32) (local $neg i32) (local $c i32) (local $dv i32) (local $basei i32) (local $acc (ref null eq))
-            (local.set $b (struct.get $binary 0 (ref.cast (ref $binary) (local.get $bin))))
-            (local.set $n (array.len (local.get $b)))
-            (if (i32.eqz (local.get $n)) (then (unreachable)))
-            (local.set $basei (i31.get_s (ref.cast (ref i31) (local.get $base))))
-            (if (i32.eq (array.get_u $bytes (local.get $b) (i32.const 0)) (i32.const 45))
-              (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))
-            (if (i32.ge_u (local.get $i) (local.get $n)) (then (unreachable)))
-            (local.set $acc (ref.i31 (i32.const 0)))
-            (block $done (loop $lp
-              (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-              (local.set $c (array.get_u $bytes (local.get $b) (local.get $i)))
-              (local.set $dv
-                (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
-                  (then (i32.sub (local.get $c) (i32.const 48)))
-                  (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
-                    (then (i32.sub (local.get $c) (i32.const 55)))
-                    (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122)))
-                      (then (i32.sub (local.get $c) (i32.const 87)))
-                      (else (i32.const 255))))))))
-              (if (i32.ge_u (local.get $dv) (local.get $basei)) (then (unreachable)))
-              (local.set $acc (call $int_add (call $int_mul (local.get $acc) (local.get $base)) (ref.i31 (local.get $dv))))
-              (local.set $i (i32.add (local.get $i) (i32.const 1)))
-              (br $lp)))
-            (if (result (ref null eq)) (local.get $neg)
-              (then (call $int_sub (ref.i31 (i32.const 0)) (local.get $acc)))
-              (else (local.get $acc))))\
-        """,
+      # binary_to_integer/2 (base-aware) and /1 (base 10). In bignum mode (the default) it accumulates
+      # through the tiered int helpers (acc = acc*base + digit on term values), so results above
+      # i31/i64 promote to $big instead of truncating; in BIGNUM=0 wrapping mode it accumulates in i32
+      # (consistent with that mode's arithmetic). Digits 0-9/A-Z/a-z; invalid digit / empty traps.
+      "$erlang.binary_to_integer_2" => b2i_wat(Process.get(:bignum)),
       "$erlang.binary_to_integer_1" =>
         """
           (func $erlang.binary_to_integer_1 (param $bin (ref null eq)) (result (ref null eq))
             (return_call $erlang.binary_to_integer_2 (local.get $bin) (ref.i31 (i32.const 10))))\
+        """,
+      # integer_to_binary/2 (base-N, uppercase digits like Erlang) + /list variants. Bignum-safe in
+      # exact mode (digit extraction via $int_rem/$int_div on term values); i32 in wrapping mode.
+      "$erlang.integer_to_binary_2" => i2b_wat(Process.get(:bignum)),
+      "$erlang.integer_to_list_1" =>
+        """
+          (func $erlang.integer_to_list_1 (param $x (ref null eq)) (result (ref null eq))
+            (return_call $erlang.integer_to_list_2 (local.get $x) (ref.i31 (i32.const 10))))\
+        """,
+      "$erlang.integer_to_list_2" =>
+        """
+          (func $erlang.integer_to_list_2 (param $x (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+            (local $b (ref $bytes)) (local $i i32) (local $out (ref null eq))
+            (local.set $b (struct.get $binary 0 (ref.cast (ref $binary) (call $erlang.integer_to_binary_2 (local.get $x) (local.get $base)))))
+            (local.set $i (array.len (local.get $b)))
+            (block $d (loop $l
+              (br_if $d (i32.eqz (local.get $i)))
+              (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+              (local.set $out (struct.new $cons (ref.i31 (array.get_u $bytes (local.get $b) (local.get $i))) (local.get $out)))
+              (br $l)))
+            (local.get $out))\
+        """,
+      # erts_internal:cmp_term/2 — Erlang term order as -1/0/1; the existing $term_compare IS that.
+      "$erts_internal.cmp_term_2" =>
+        """
+          (func $erts_internal.cmp_term_2 (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq))
+            (ref.i31 (call $term_compare (local.get $a) (local.get $b))))\
+        """,
+      # make_ref/0 as a real function (the direct-call forms are emit-intercepted; this covers
+      # captures/apply and tail-call forms). $refctr/$ref are always emitted.
+      "$erlang.make_ref_0" =>
+        """
+          (func $erlang.make_ref_0 (result (ref null eq))
+            (global.set $refctr (i32.add (global.get $refctr) (i32.const 1)))
+            (struct.new $ref (global.get $refctr) (i32.const 0)))\
         """,
       "$binary.encode_unsigned_1" =>
         """
@@ -1177,6 +1200,16 @@ defmodule Codegen.Runtime do
               (func $erlang.raise_3 (param $class (ref null eq)) (param $reason (ref null eq)) (param $trace (ref null eq)) (result (ref null eq))
                 (unreachable))\
             """)),
+      # erlang:error/1,2,3 + throw/1 + nif_error/1 — the error-raising BIFs every program's error paths
+      # reach (`raise X` compiles to error/1-3 with the exception struct as the reason). Same 3-mode
+      # gating as raise/3: exc mode -> throw $exc with the right class; proc-only -> crash the process
+      # with the reason (its supervisor/monitor sees it); neither -> honest trap. The /2 and /3 extra
+      # args only annotate stacktraces (which we don't record) — semantics otherwise identical.
+      "$erlang.error_1" => error_bif("error_1", "(param $r (ref null eq))", "$atom_error", "(local.get $r)"),
+      "$erlang.error_2" => error_bif("error_2", "(param $r (ref null eq)) (param $a1 (ref null eq))", "$atom_error", "(local.get $r)"),
+      "$erlang.error_3" => error_bif("error_3", "(param $r (ref null eq)) (param $a1 (ref null eq)) (param $a2 (ref null eq))", "$atom_error", "(local.get $r)"),
+      "$erlang.nif_error_1" => error_bif("nif_error_1", "(param $r (ref null eq))", "$atom_error", "(local.get $r)"),
+      "$erlang.throw_1" => error_bif("throw_1", "(param $r (ref null eq))", "$atom_throw", "(local.get $r)"),
       # lists:keyfind(Key, N, List) -> the first tuple T with element(N,T) == Key, else false.
       "$lists.keyfind_3" =>
         """
@@ -1496,6 +1529,137 @@ defmodule Codegen.Runtime do
             (if (i32.eqz (ref.eq (local.get $p) (ref.i31 (i32.const 0)))) (then (unreachable)))
             (struct.new $float #{body}))\
         """}
+    end
+  end
+
+  # binary_to_integer/2: bignum-tier (term-level acc via $int_mul/$int_add) vs wrapping-i32 fallback.
+  defp b2i_wat(bignum?) do
+    {acc_decl, acc_init, acc_step, ret} =
+      if bignum? do
+        {"(local $acc (ref null eq))",
+         "(local.set $acc (ref.i31 (i32.const 0)))",
+         "(local.set $acc (call $int_add (call $int_mul (local.get $acc) (local.get $base)) (ref.i31 (local.get $dv))))",
+         "(if (result (ref null eq)) (local.get $neg) (then (call $int_sub (ref.i31 (i32.const 0)) (local.get $acc))) (else (local.get $acc)))"}
+      else
+        {"(local $acc i32)",
+         "(local.set $acc (i32.const 0))",
+         "(local.set $acc (i32.add (i32.mul (local.get $acc) (local.get $basei)) (local.get $dv)))",
+         "(ref.i31 (if (result i32) (local.get $neg) (then (i32.sub (i32.const 0) (local.get $acc))) (else (local.get $acc))))"}
+      end
+
+    """
+      (func $erlang.binary_to_integer_2 (param $bin (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+        (local $b (ref $bytes)) (local $n i32) (local $i i32) (local $neg i32) (local $c i32) (local $dv i32) (local $basei i32) #{acc_decl}
+        (local.set $b (struct.get $binary 0 (ref.cast (ref $binary) (local.get $bin))))
+        (local.set $n (array.len (local.get $b)))
+        (if (i32.eqz (local.get $n)) (then (unreachable)))
+        (local.set $basei (i31.get_s (ref.cast (ref i31) (local.get $base))))
+        (if (i32.eq (array.get_u $bytes (local.get $b) (i32.const 0)) (i32.const 45))
+          (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))
+        (if (i32.ge_u (local.get $i) (local.get $n)) (then (unreachable)))
+        #{acc_init}
+        (block $done (loop $lp
+          (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+          (local.set $c (array.get_u $bytes (local.get $b) (local.get $i)))
+          (local.set $dv
+            (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
+              (then (i32.sub (local.get $c) (i32.const 48)))
+              (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
+                (then (i32.sub (local.get $c) (i32.const 55)))
+                (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122)))
+                  (then (i32.sub (local.get $c) (i32.const 87)))
+                  (else (i32.const 255))))))))
+          (if (i32.ge_u (local.get $dv) (local.get $basei)) (then (unreachable)))
+          #{acc_step}
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $lp)))
+        #{ret})\
+    """
+  end
+
+  # integer_to_binary/2: count digits, then fill from the end (digits 0-9,A-Z — Erlang uppercase).
+  # Bignum-tier digit extraction via $int_rem/$int_div (a digit is always i31); i32 in wrapping mode.
+  defp i2b_wat(bignum?) do
+    if bignum? do
+      """
+        (func $erlang.integer_to_binary_2 (param $x (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+          (local $v (ref null eq)) (local $v0 (ref null eq)) (local $neg i32) (local $len i32) (local $d (ref $bytes)) (local $i i32) (local $dv i32)
+          (local.set $v (local.get $x))
+          (if (i32.lt_s (call $int_cmp (local.get $v) (ref.i31 (i32.const 0))) (i32.const 0))
+            (then (local.set $neg (i32.const 1)) (local.set $v (call $int_sub (ref.i31 (i32.const 0)) (local.get $v)))))
+          (local.set $v0 (local.get $v))
+          (block $c (loop $cl
+            (local.set $len (i32.add (local.get $len) (i32.const 1)))
+            (local.set $v (call $int_div (local.get $v) (local.get $base)))
+            (br_if $c (i32.eqz (call $int_cmp (local.get $v) (ref.i31 (i32.const 0)))))
+            (br $cl)))
+          (local.set $len (i32.add (local.get $len) (local.get $neg)))
+          (local.set $d (array.new_default $bytes (local.get $len)))
+          (if (local.get $neg) (then (array.set $bytes (local.get $d) (i32.const 0) (i32.const 45))))
+          (local.set $i (i32.sub (local.get $len) (i32.const 1)))
+          (local.set $v (local.get $v0))
+          (block $f (loop $fl
+            (local.set $dv (i31.get_s (ref.cast (ref i31) (call $int_rem (local.get $v) (local.get $base)))))
+            (array.set $bytes (local.get $d) (local.get $i)
+              (if (result i32) (i32.lt_u (local.get $dv) (i32.const 10)) (then (i32.add (i32.const 48) (local.get $dv))) (else (i32.add (i32.const 55) (local.get $dv)))))
+            (local.set $v (call $int_div (local.get $v) (local.get $base)))
+            (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+            (br_if $f (i32.eqz (call $int_cmp (local.get $v) (ref.i31 (i32.const 0)))))
+            (br $fl)))
+          (struct.new $binary (local.get $d)))\
+      """
+    else
+      """
+        (func $erlang.integer_to_binary_2 (param $x (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+          (local $n i32) (local $basei i32) (local $neg i32) (local $len i32) (local $t i32) (local $d (ref $bytes)) (local $i i32) (local $dv i32)
+          (local.set $n (i31.get_s (ref.cast (ref i31) (local.get $x))))
+          (local.set $basei (i31.get_s (ref.cast (ref i31) (local.get $base))))
+          (if (i32.lt_s (local.get $n) (i32.const 0))
+            (then (local.set $neg (i32.const 1)) (local.set $n (i32.sub (i32.const 0) (local.get $n)))))
+          (local.set $t (local.get $n)) (local.set $len (i32.const 0))
+          (block $c (loop $cl
+            (local.set $len (i32.add (local.get $len) (i32.const 1)))
+            (local.set $t (i32.div_u (local.get $t) (local.get $basei)))
+            (br_if $c (i32.eqz (local.get $t))) (br $cl)))
+          (local.set $len (i32.add (local.get $len) (local.get $neg)))
+          (local.set $d (array.new_default $bytes (local.get $len)))
+          (if (local.get $neg) (then (array.set $bytes (local.get $d) (i32.const 0) (i32.const 45))))
+          (local.set $i (i32.sub (local.get $len) (i32.const 1)))
+          (block $f (loop $fl
+            (local.set $dv (i32.rem_u (local.get $n) (local.get $basei)))
+            (array.set $bytes (local.get $d) (local.get $i)
+              (if (result i32) (i32.lt_u (local.get $dv) (i32.const 10)) (then (i32.add (i32.const 48) (local.get $dv))) (else (i32.add (i32.const 55) (local.get $dv)))))
+            (local.set $n (i32.div_u (local.get $n) (local.get $basei)))
+            (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+            (br_if $f (i32.eqz (local.get $n))) (br $fl)))
+          (struct.new $binary (local.get $d)))\
+      """
+    end
+  end
+
+  # WAT for an error-raising BIF, gated on the runtime mode (mirrors $erlang.raise_3):
+  # exc -> (throw $exc class reason null-trace); proc-only -> exit_raw(reason); else -> trap.
+  # `class_global` is "$atom_error" / "$atom_throw" (forced atoms whenever exc mode is on).
+  defp error_bif(name, params, class_global, reason_expr) do
+    cond do
+      Process.get(:exc) ->
+        """
+          (func $erlang.#{name} #{params} (result (ref null eq))
+            (throw $exc (global.get #{class_global}) #{reason_expr} (ref.null none)))\
+        """
+
+      Process.get(:proc) ->
+        """
+          (func $erlang.#{name} #{params} (result (ref null eq))
+            (call $exit_raw #{reason_expr})
+            (unreachable))\
+        """
+
+      true ->
+        """
+          (func $erlang.#{name} #{params} (result (ref null eq))
+            (unreachable))\
+        """
     end
   end
 end

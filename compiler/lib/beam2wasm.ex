@@ -58,6 +58,14 @@ defmodule Beam2Wasm do
     flt = float_mode?(user)   # f64 floats + :math.* present? -> emit $float box + math host imports
     Process.put(:float, flt)
     Process.put(:stub, System.get_env("STUB") != nil)
+    # Regex.replace/3,4 may receive a FUNCTION replacement: pre-scan here (before the closure table is
+    # sized) so the $clos1/$clos2 types it dispatches on are forced into the table's type set.
+    regex_replace? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, Regex, :replace, a}} when a in [3, 4], op) or
+          match?({_, _, {:extfunc, Regex, :replace, a}, _} when a in [3, 4], op)
+      end)
+    end)
     # Closures: scan make_fun3 to learn every closure-target function, its call arity N
     # (= total arity - num free vars) and its slot in the funcref table.
     clos_refs = collect_closures(user)   # unique [{mod, fun, total_arity, numfree}]
@@ -85,7 +93,8 @@ defmodule Beam2Wasm do
     end)
     Process.put(:mapsfold, mapsfold?)
     clos_ns = (Enum.map(clos_refs, fn {_m, _f, ar, nf} -> ar - nf end) ++ call_fun_arities(user) ++ tramp_ns ++
-               if(mapsfold?, do: [3], else: []) ++ if(proc, do: [0], else: []))
+               if(mapsfold?, do: [3], else: []) ++ if(proc, do: [0], else: []) ++
+               if(regex_replace?, do: [1, 2], else: []))
               |> Enum.uniq() |> Enum.sort()
     trampolines = Enum.map_join(tramp_ns, "\n", fn nn ->
       ps = if nn == 0, do: "", else: " " <> Enum.map_join(0..(nn - 1), " ", &"(param $x#{&1} (ref null eq))")
@@ -162,7 +171,8 @@ defmodule Beam2Wasm do
         match?({_, _, {:extfunc, :crypto, :hash, 2}}, op) or match?({_, _, {:extfunc, :crypto, :hash, 2}, _}, op)
       end)
     end)
-    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :unix, :linux, :return, :index] ++
+    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
+              :caseless, :multiline, :dotall, :extended, :unicode] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
              if(exc, do: [:throw, :error, :exit, :EXIT], else: [])
@@ -209,14 +219,22 @@ defmodule Beam2Wasm do
       end)
     end)
     Process.put(:regex_run3, regex_run3?)
-    regex_replace3? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+    # replace/3 and /4 share one impl (string- or FUNCTION-replacement; the early `regex_replace?`
+    # pre-scan above already forced $clos1/$clos2 for the function case).
+    regex_replace3? = regex_replace?
+    Process.put(:regex_replace3, regex_replace3?)
+    # the rest of the Regex surface: match?/2, scan/2, escape/1, split/2, compile/1, compile!/1,2
+    regex_more? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
-        match?({_, _, {:extfunc, Regex, :replace, 3}}, op) or match?({_, _, {:extfunc, Regex, :replace, 3}, _}, op)
+        match?({_, _, {:extfunc, Regex, f, a}} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}], op) or
+          match?({_, _, {:extfunc, Regex, f, a}, _} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}], op)
       end)
     end)
-    Process.put(:regex_replace3, regex_replace3?)
-    # run/2 shim is also needed when run/3 is used (run/3 delegates to it for the non-index path).
-    regex_run? = regex_run3? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+    # run/2 shim is also needed when run/3 is used (run/3 delegates to it for the non-index path);
+    # split/3 likewise backs split/2.
+    regex_split? = regex_split? or regex_more?
+    Process.put(:regex_split, regex_split?)
+    regex_run? = regex_run3? or regex_more? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Regex, :run, 2}}, op) or match?({_, _, {:extfunc, Regex, :run, 2}, _}, op)
       end)
@@ -261,7 +279,11 @@ defmodule Beam2Wasm do
       (if regex_split?, do: [{Regex, :split, 3}], else: []) ++
       (if regex_run?, do: [{Regex, :run, 2}], else: []) ++
       (if regex_run3?, do: [{Regex, :run, 3}], else: []) ++
-      (if regex_replace3?, do: [{Regex, :replace, 3}], else: []) ++
+      (if regex_replace3?, do: [{Regex, :replace, 3}, {Regex, :replace, 4}], else: []) ++
+      (if regex_more?,
+         do: [{Regex, :match?, 2}, {Regex, :scan, 2}, {Regex, :escape, 1}, {Regex, :split, 2},
+              {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}],
+         else: []) ++
       (if titlecase?, do: [{:string, :titlecase, 1}], else: []) ++
       (if http_get?, do: [{Req, :get!, 1}], else: []) ++
       (if crypto_hash?, do: [{:crypto, :hash, 2}], else: [])
@@ -316,10 +338,11 @@ defmodule Beam2Wasm do
       if(bignum, do: bignum_imports(), else: ""),
       if(flt, do: float_imports(user), else: ""),
       if(strcase?, do: "  (import \"str\" \"upcase\" (func $host_str_upcase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"downcase\" (func $host_str_downcase (param (ref null eq)) (result (ref null eq))))", else: ""),
-      if(regex_split?, do: "  (import \"str\" \"re_split\" (func $host_re_split (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
-      if(regex_run?, do: "  (import \"str\" \"re_run\" (func $host_re_run (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
-      if(regex_run3?, do: "  (import \"str\" \"re_run_index\" (func $host_re_run_index (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
-      if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_split?, do: "  (import \"str\" \"re_split\" (func $host_re_split (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_run?, do: "  (import \"str\" \"re_run\" (func $host_re_run (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_run3?, do: "  (import \"str\" \"re_run_index\" (func $host_re_run_index (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))\n  (import \"str\" \"re_replace_fun\" (func $host_re_replace_fun (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))", else: ""),
+      if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(titlecase?, do: "  (import \"str\" \"titlecase\" (func $host_str_titlecase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"upchar\" (func $host_str_upchar (param i32) (result i32)))", else: ""),
       if(http_get? or req_in_user, do: "  (import \"http\" \"get\" (func $host_http_get (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(crypto_hash?, do: "  (import \"crypto\" \"hash\" (func $host_crypto_hash (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
@@ -367,13 +390,45 @@ defmodule Beam2Wasm do
           (if (ref.test (ref $atom) (local.get $x)) (then (return_call $erlang.atom_to_binary_1 (local.get $x))))
           (unreachable))\
       """, else: ""),
+      # Shared accessors for the %Regex{} struct: the host shims need BOTH :source and :opts (PCRE
+      # modifiers like x/i/m/s — translated host-side to JS RegExp flags/rewrites). :opts may be
+      # absent on runtime-built regexes -> empty binary.
+      if(regex_split? or regex_run? or regex_replace3? or regex_more?, do: """
+        (func $regex_src (param $re (ref null eq)) (result (ref null eq))
+          (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))))
+        (func $regex_opts (param $re (ref null eq)) (result (ref null eq))
+          (local $n (ref null $mnode)) (local $v (ref null eq)) (local $h (ref null eq)) (local $buf (ref $bytes)) (local $len i32) (local $out (ref $bytes)) (local $i i32)
+          (local.set $n (call $map_get (local.get $re) (global.get $atom_opts)))
+          (if (ref.is_null (local.get $n)) (then (return (struct.new $binary (array.new_default $bytes (i32.const 0))))))
+          (local.set $v (struct.get $mnode 1 (ref.as_non_null (local.get $n))))
+          (if (ref.test (ref $binary) (local.get $v)) (then (return (local.get $v))))
+          ;; Elixir 1.13+ stores opts as a LIST OF ATOMS ([:caseless, :extended, ...]) -> canonical
+          ;; single-letter flags binary for the host translator (i m s x u; unknown opts ignored).
+          (local.set $buf (array.new_default $bytes (i32.const 8)))
+          (block $d (loop $l2
+            (br_if $d (i32.eqz (ref.test (ref $cons) (local.get $v))))
+            (local.set $h (struct.get $cons 0 (ref.cast (ref $cons) (local.get $v))))
+            (if (ref.eq (local.get $h) (global.get $atom_caseless)) (then (array.set $bytes (local.get $buf) (local.get $len) (i32.const 105)) (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+            (if (ref.eq (local.get $h) (global.get $atom_multiline)) (then (array.set $bytes (local.get $buf) (local.get $len) (i32.const 109)) (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+            (if (ref.eq (local.get $h) (global.get $atom_dotall)) (then (array.set $bytes (local.get $buf) (local.get $len) (i32.const 115)) (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+            (if (ref.eq (local.get $h) (global.get $atom_extended)) (then (array.set $bytes (local.get $buf) (local.get $len) (i32.const 120)) (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+            (if (ref.eq (local.get $h) (global.get $atom_unicode)) (then (array.set $bytes (local.get $buf) (local.get $len) (i32.const 117)) (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+            (local.set $v (struct.get $cons 1 (ref.cast (ref $cons) (local.get $v))))
+            (br $l2)))
+          (local.set $out (array.new_default $bytes (local.get $len)))
+          (block $cd (loop $cl
+            (br_if $cd (i32.ge_u (local.get $i) (local.get $len)))
+            (array.set $bytes (local.get $out) (local.get $i) (array.get_u $bytes (local.get $buf) (local.get $i)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $cl)))
+          (struct.new $binary (local.get $out)))\
+      """, else: ""),
       # Regex.split(regex, subject, opts) — delegate the match to a host JS RegExp. The host returns a
       # framed binary <<count:32, (len:32, bytes)...>> (big-endian); we slice out each part as a sub-binary
       # and build the list, dropping empty parts when `trim: true` is in opts (Elixir's :trim semantics).
       if(regex_split?, do: """
         (func $Elixir_46_Regex.split_3 (param $re (ref null eq)) (param $subj (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
           (local $fb (ref $bytes)) (local $cnt i32) (local $off i32) (local $len i32) (local $trim i32) (local $out (ref null eq))
-          (local.set $fb (call $bin_bytes (call $host_re_split (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj))))
+          (local.set $fb (call $bin_bytes (call $host_re_split (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
           (local.set $trim (call $kw_has_true (local.get $opts) (global.get $atom_trim)))
           (local.set $cnt (call $rdu32be (local.get $fb) (i32.const 0)))
           (local.set $off (i32.const 4))
@@ -407,7 +462,7 @@ defmodule Beam2Wasm do
       if(regex_run?, do: """
         (func $Elixir_46_Regex.run_2 (param $re (ref null eq)) (param $subj (ref null eq)) (result (ref null eq))
           (local $fb (ref $bytes)) (local $cnt i32) (local $off i32) (local $len i32) (local $out (ref null eq)) (local $item (ref null eq))
-          (local.set $fb (call $bin_bytes (call $host_re_run (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj))))
+          (local.set $fb (call $bin_bytes (call $host_re_run (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
           (if (i32.eqz (array.get_u $bytes (local.get $fb) (i32.const 0))) (then (return (global.get $atom_nil))))
           (local.set $cnt (call $rdu32be (local.get $fb) (i32.const 1)))
           (local.set $off (i32.const 5))
@@ -442,7 +497,7 @@ defmodule Beam2Wasm do
             (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
             (br $sl)))
           (if (i32.eqz (local.get $idx)) (then (return_call $Elixir_46_Regex.run_2 (local.get $re) (local.get $subj))))
-          (local.set $fb (call $bin_bytes (call $host_re_run_index (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj))))
+          (local.set $fb (call $bin_bytes (call $host_re_run_index (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
           (if (i32.eqz (array.get_u $bytes (local.get $fb) (i32.const 0))) (then (return (global.get $atom_nil))))
           (local.set $cnt (call $rdu32be (local.get $fb) (i32.const 1)))
           (local.set $off (i32.const 5))
@@ -456,11 +511,83 @@ defmodule Beam2Wasm do
             (br $lp)))
           (return_call $lists.reverse_1 (local.get $out)))\
       """, else: ""),
-      # Regex.replace(regex, subject, replacement) — global string replace, delegated to a host JS RegExp.
-      # (Elixir \\N backrefs / \\0 whole-match are translated to JS $N / $& host-side.)
+      # Regex.replace(regex, subject, replacement[, opts]) — STRING replacement via host JS RegExp
+      # (Elixir \\N backrefs / \\0 translated to $N / $& host-side); FUNCTION replacement via the host
+      # calling back into the exported $re_fun_call, which dispatches on the closure's arity
+      # (fn(match) / fn(match, cap1)). opts: only `global: false` changes behavior (default global).
       if(regex_replace3?, do: """
+        (func $regex_replace_go (param $re (ref null eq)) (param $subj (ref null eq)) (param $repl (ref null eq)) (param $g i32) (result (ref null eq))
+          (if (ref.test (ref $fun) (local.get $repl))
+            (then (return_call $host_re_replace_fun (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj) (local.get $repl) (local.get $g))))
+          (return_call $host_re_replace (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj) (local.get $repl) (local.get $g)))
         (func $Elixir_46_Regex.replace_3 (param $re (ref null eq)) (param $subj (ref null eq)) (param $repl (ref null eq)) (result (ref null eq))
-          (return_call $host_re_replace (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))) (local.get $subj) (local.get $repl)))\
+          (return_call $regex_replace_go (local.get $re) (local.get $subj) (local.get $repl) (i32.const 1)))
+        (func $Elixir_46_Regex.replace_4 (param $re (ref null eq)) (param $subj (ref null eq)) (param $repl (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+          (local $g i32) (local $l (ref null eq)) (local $t (ref $tuple))
+          (local.set $g (i32.const 1))
+          (local.set $l (local.get $opts))
+          (block $sd (loop $sl
+            (br_if $sd (i32.eqz (ref.test (ref $cons) (local.get $l))))
+            (if (ref.test (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+              (then (local.set $t (ref.cast (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l)))))
+                (if (i32.and (i32.eq (array.len (local.get $t)) (i32.const 2))
+                       (i32.and (ref.eq (array.get $tuple (local.get $t) (i32.const 0)) (global.get $atom_global))
+                                (ref.eq (array.get $tuple (local.get $t) (i32.const 1)) (global.get $atom_false))))
+                  (then (local.set $g (i32.const 0))))))
+            (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+            (br $sl)))
+          (return_call $regex_replace_go (local.get $re) (local.get $subj) (local.get $repl) (local.get $g)))
+        (func $re_fun_call (export "re_fun_call") (param $f (ref null eq)) (param $match (ref null eq)) (param $cap1 (ref null eq)) (param $ncaps i32) (result (ref null eq))
+          (local $idx i32)
+          (local.set $idx (struct.get $fun 0 (ref.cast (ref $fun) (local.get $f))))
+          (if (i32.gt_s (local.get $ncaps) (i32.const 0))
+            (then (if (ref.test (ref $clos2) (table.get $ftab (local.get $idx)))
+              (then (return (call_indirect $ftab (type $clos2) (local.get $f) (local.get $match) (local.get $cap1) (local.get $idx)))))))
+          (call_indirect $ftab (type $clos1) (local.get $f) (local.get $match) (local.get $idx)))\
+      """, else: ""),
+      # match?/2, scan/2, escape/1, split/2, compile/1, compile!/1,2. A "compiled" regex under the
+      # host-shim model IS its source: compile! builds %Regex{source: s} (the only field the shims read).
+      if(regex_more?, do: """
+        (func #{fq(Regex, :match?, 2)} (param $re (ref null eq)) (param $subj (ref null eq)) (result (ref null eq))
+          (if (result (ref null eq)) (call $host_re_test (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))
+            (then (global.get $atom_true)) (else (global.get $atom_false))))
+        (func $Elixir_46_Regex.escape_1 (param $s (ref null eq)) (result (ref null eq))
+          (return_call $host_re_escape (local.get $s)))
+        (func $Elixir_46_Regex.split_2 (param $re (ref null eq)) (param $subj (ref null eq)) (result (ref null eq))
+          (return_call $Elixir_46_Regex.split_3 (local.get $re) (local.get $subj) (ref.null none)))
+        (func $regex_build (param $s (ref null eq)) (param $o (ref null eq)) (result (ref null eq))
+          (call $map_put (call $map_put (call $map_put (struct.new $map (ref.null $mnode))
+            (global.get $atom_#{sanitize(:__struct__)}) (global.get $atom_#{sanitize(Regex)}))
+            (global.get $atom_source) (local.get $s))
+            (global.get $atom_opts) (local.get $o)))
+        (func #{fq(Regex, :compile!, 1)} (param $s (ref null eq)) (result (ref null eq))
+          (return_call $regex_build (local.get $s) (struct.new $binary (array.new_default $bytes (i32.const 0)))))
+        (func #{fq(Regex, :compile!, 2)} (param $s (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+          (return_call $regex_build (local.get $s) (local.get $opts)))
+        (func $Elixir_46_Regex.compile_1 (param $s (ref null eq)) (result (ref null eq))
+          (array.new_fixed $tuple 2 (global.get $atom_ok) (call $regex_build (local.get $s) (struct.new $binary (array.new_default $bytes (i32.const 0))))))
+        (func $Elixir_46_Regex.scan_2 (param $re (ref null eq)) (param $subj (ref null eq)) (result (ref null eq))
+          (local $fb (ref $bytes)) (local $nm i32) (local $nc i32) (local $off i32) (local $len i32) (local $out (ref null eq)) (local $caps (ref null eq))
+          (local.set $fb (call $bin_bytes (call $host_re_scan (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
+          (local.set $nm (call $rdu32be (local.get $fb) (i32.const 0)))
+          (local.set $off (i32.const 4))
+          (block $md (loop $ml
+            (br_if $md (i32.eqz (local.get $nm)))
+            (local.set $nc (call $rdu32be (local.get $fb) (local.get $off)))
+            (local.set $off (i32.add (local.get $off) (i32.const 4)))
+            (local.set $caps (ref.null none))
+            (block $cd (loop $cl
+              (br_if $cd (i32.eqz (local.get $nc)))
+              (local.set $len (call $rdu32be (local.get $fb) (local.get $off)))
+              (local.set $off (i32.add (local.get $off) (i32.const 4)))
+              (local.set $caps (struct.new $cons (call $subbin (local.get $fb) (local.get $off) (local.get $len)) (local.get $caps)))
+              (local.set $off (i32.add (local.get $off) (local.get $len)))
+              (local.set $nc (i32.sub (local.get $nc) (i32.const 1)))
+              (br $cl)))
+            (local.set $out (struct.new $cons (call $lists.reverse_1 (local.get $caps)) (local.get $out)))
+            (local.set $nm (i32.sub (local.get $nm) (i32.const 1)))
+            (br $ml)))
+          (return_call $lists.reverse_1 (local.get $out)))\
       """, else: ""),
       # String.Unicode.upcase/downcase(string, mode, acc) -> the cased binary (mode/acc ignored: acc=[]
       # at the top-level entry, and the host does the whole string at once). Genuinely table-backed.

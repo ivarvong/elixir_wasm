@@ -1,11 +1,5 @@
 Elixir.Module.concat/2	20
 Elixir.Protocol.UndefinedError.exception/1	20
-erlang.error/1	20
-erlang.error/2	20
-erlang.error/3	20
-erlang.make_ref/0	20
-erlang.nif_error/1	20
-erts_internal.cmp_term/2	20
 Elixir.ArgumentError.exception/1	19
 Elixir.Kernel.inspect/1	19
 elixir_erl_pass.no_parens_remote/2	18
@@ -14,7 +8,6 @@ Elixir.IO.warn/1	17
 Elixir.Enum.EmptyError.exception/1	14
 Dict.update/4	6
 Elixir.List.-inlined-last/2-/2	3
-Elixir.Regex.replace/4	2
 Elixir.UnicodeConversionError.exception/1	2
 erts_internal.mc_iterator/1	2
 erts_internal.mc_refill/1	2
@@ -23,4 +16,3 @@ Elixir.Float.round/3	1
 Elixir.KeyError.exception/1	1
 Elixir.String.-inlined-duplicate/2-/2	1
 Gap18.pack_bits/2	1
-erlang.throw/1	1

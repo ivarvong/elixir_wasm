@@ -50,12 +50,13 @@ defmodule MdDemo do
     # their beams double-defines the host-shimmed functions ("repeated function name").
     # Include protocol IMPL modules (Enumerable.List etc.) so the dynamic apply dispatch in the consolidated
     # protocols has real targets to call.
-    [Kernel, Enum, String, String.Chars, List, Map, MapSet, Keyword, Integer, Float, Tuple, Range, Stream,
-     Enumerable, Collectable, Inspect, Inspect.Algebra, Access, :lists, :maps, :sets, :ordsets, :gb_sets,
+    [Kernel, Exception, Enum, String, String.Break, String.Chars, List, Map, MapSet, Keyword, Integer, Float,
+     Tuple, Range, Stream, Enumerable, Collectable, Inspect, Inspect.Algebra, Access,
+     ArgumentError, RuntimeError, KeyError, :lists, :maps, :sets, :ordsets, :gb_sets,
      Enumerable.List, Enumerable.Map, Enumerable.Range, Enumerable.MapSet, Enumerable.Function, Enumerable.Stream,
      Collectable.List, Collectable.Map, Collectable.MapSet, Collectable.BitString,
      String.Chars.Integer, String.Chars.Float, String.Chars.List, String.Chars.BitString, String.Chars.Atom]
-    |> Enum.map(fn m -> to_string(:code.which(m)) end)
+    |> Enum.map(fn m -> Code.ensure_loaded(m); to_string(:code.which(m)) end)
     |> Enum.filter(&String.ends_with?(&1, ".beam"))
   end
 
