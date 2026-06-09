@@ -1108,24 +1108,44 @@ defmodule Codegen.Runtime do
           (func $erlang.list_to_atom_1 (param $l (ref null eq)) (result (ref null eq))
             (global.get $atom_undefined))\
         """,
-      "$erlang.binary_to_integer_1" =>
+      # binary_to_integer/2 (base-aware) and /1 (base 10). Bignum-safe: accumulates through the tiered
+      # int helpers (acc = acc*base + digit on term values), so results above i31/i64 promote to $big
+      # instead of truncating. Digits 0-9/A-Z/a-z; an out-of-range digit or empty input traps (badarg).
+      "$erlang.binary_to_integer_2" =>
         """
-          (func $erlang.binary_to_integer_1 (param $bin (ref null eq)) (result (ref null eq))
-            (local $b (ref $bytes)) (local $n i32) (local $i i32) (local $neg i32) (local $acc i32) (local $c i32)
+          (func $erlang.binary_to_integer_2 (param $bin (ref null eq)) (param $base (ref null eq)) (result (ref null eq))
+            (local $b (ref $bytes)) (local $n i32) (local $i i32) (local $neg i32) (local $c i32) (local $dv i32) (local $basei i32) (local $acc (ref null eq))
             (local.set $b (struct.get $binary 0 (ref.cast (ref $binary) (local.get $bin))))
             (local.set $n (array.len (local.get $b)))
             (if (i32.eqz (local.get $n)) (then (unreachable)))
+            (local.set $basei (i31.get_s (ref.cast (ref i31) (local.get $base))))
             (if (i32.eq (array.get_u $bytes (local.get $b) (i32.const 0)) (i32.const 45))
               (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))
+            (if (i32.ge_u (local.get $i) (local.get $n)) (then (unreachable)))
+            (local.set $acc (ref.i31 (i32.const 0)))
             (block $done (loop $lp
               (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
               (local.set $c (array.get_u $bytes (local.get $b) (local.get $i)))
-              (if (i32.or (i32.lt_u (local.get $c) (i32.const 48)) (i32.gt_u (local.get $c) (i32.const 57))) (then (unreachable)))
-              (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 10)) (i32.sub (local.get $c) (i32.const 48))))
+              (local.set $dv
+                (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
+                  (then (i32.sub (local.get $c) (i32.const 48)))
+                  (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
+                    (then (i32.sub (local.get $c) (i32.const 55)))
+                    (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122)))
+                      (then (i32.sub (local.get $c) (i32.const 87)))
+                      (else (i32.const 255))))))))
+              (if (i32.ge_u (local.get $dv) (local.get $basei)) (then (unreachable)))
+              (local.set $acc (call $int_add (call $int_mul (local.get $acc) (local.get $base)) (ref.i31 (local.get $dv))))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $lp)))
-            (if (local.get $neg) (then (local.set $acc (i32.sub (i32.const 0) (local.get $acc)))))
-            (ref.i31 (local.get $acc)))\
+            (if (result (ref null eq)) (local.get $neg)
+              (then (call $int_sub (ref.i31 (i32.const 0)) (local.get $acc)))
+              (else (local.get $acc))))\
+        """,
+      "$erlang.binary_to_integer_1" =>
+        """
+          (func $erlang.binary_to_integer_1 (param $bin (ref null eq)) (result (ref null eq))
+            (return_call $erlang.binary_to_integer_2 (local.get $bin) (ref.i31 (i32.const 10))))\
         """,
       "$binary.encode_unsigned_1" =>
         """
