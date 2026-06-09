@@ -3,7 +3,7 @@
 //   node driver.mjs <wasm> <wat> <cases.json>  ->  prints [{ok, val}] JSON to stdout
 // Arg/result types bridged: int | bool | atom | bin(string) | list (list of ints).
 import fs from "node:fs";
-import { makeBig, makeMath, makeStr, makeFs, makeIo, memFsBacking } from "../runtime/imports.mjs";
+import { makeBig, makeMath, makeStr, makeFs, makeIo, makeProcStubs, memFsBacking } from "../runtime/imports.mjs";
 
 const [wasmPath, watPath, casesPath] = process.argv.slice(2);
 const atoms = JSON.parse(fs.readFileSync(watPath, "utf8").match(/@atoms (.*)/)[1]);
@@ -15,7 +15,9 @@ let e;
 const str = makeStr(() => e);
 const vfs = makeFs(() => e, memFsBacking());
 const io = makeIo(() => e);
-e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, fs: vfs, io }).exports;
+// benign proc/sched stubs: fed stdlib beams (Kernel/...) can flip proc mode on without running processes
+const { proc, sched } = makeProcStubs();
+e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, fs: vfs, io, proc, sched }).exports;
 
 const toL = a => a.reduceRight((l, x) => e.cons(x, l), e.nil());
 const toJ = l => { const o = []; while (e.is_cons(l)) { o.push(e.head(l)); l = e.tail(l); } return o; };

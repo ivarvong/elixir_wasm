@@ -737,7 +737,14 @@ defmodule Beam2Wasm do
   # minimal JSON array-of-strings encoder (no deps) for the @atoms table comment
   def atoms_json(atoms) do
     inner = Enum.map_join(atoms, ",", fn a ->
-      s = Atom.to_string(a) |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+      s =
+        Atom.to_string(a)
+        |> String.replace("\\", "\\\\")
+        |> String.replace("\"", "\\\"")
+        # control characters are invalid raw inside JSON strings (atoms like :"\n" exist in stdlib
+        # beams) — \u-escape them; the @atoms comment must stay one line, so \n especially.
+        |> String.to_charlist()
+        |> Enum.map_join(fn c -> if c < 0x20, do: "\\u" <> String.pad_leading(Integer.to_string(c, 16), 4, "0"), else: <<c::utf8>> end)
       "\"#{s}\""
     end)
     "[#{inner}]"
