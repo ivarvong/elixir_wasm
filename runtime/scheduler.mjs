@@ -6,7 +6,7 @@
 // resets the budget (set_reds) before each dispatch — BEAM's "fresh reductions per schedule".
 //   node --experimental-wasm-jspi scheduler.mjs <wasm> <entry> [intargs...]
 import fs from "node:fs";
-import { makeBig, makeMath, makeStr } from "./imports.mjs";
+import { makeBig, makeMath, makeStr, makeFs, makeIo, memFsBacking } from "./imports.mjs";
 const [wasmPath, entry, ...intArgs] = process.argv.slice(2);
 const args = intArgs.map(Number);
 const BUDGET = 2000;                 // reductions per dispatch (matches the compiler default)
@@ -98,6 +98,9 @@ const imports = {
   big: makeBig(),
   math: makeMath(),
   str: makeStr(() => instance.exports),
+  // effects ABI defaults: in-memory virtual fs + real console (unused imports are ignored)
+  fs: makeFs(() => instance.exports, memFsBacking()),
+  io: makeIo(() => instance.exports),
 };
 
 const instance = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), imports);

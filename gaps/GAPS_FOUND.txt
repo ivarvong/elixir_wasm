@@ -4,7 +4,6 @@ Elixir.ArgumentError.exception/1	19
 Elixir.Kernel.inspect/1	19
 elixir_erl_pass.no_parens_remote/2	18
 erlang.phash/2	18
-Elixir.IO.warn/1	17
 Elixir.Enum.EmptyError.exception/1	14
 Dict.update/4	6
 Elixir.List.-inlined-last/2-/2	3

@@ -20,5 +20,5 @@ const crypto = makeCrypto(() => e, nodeCrypto);
 // never EXECUTES it on the happy path — the adapter is overridden, so no transport/pool runs.
 const { proc, sched } = makeProcStubs();
 
-e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, http, crypto, proc, sched }).exports;
+e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, http, crypto, proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) }).exports;
 process.stdout.write(rdBin(e.run()));

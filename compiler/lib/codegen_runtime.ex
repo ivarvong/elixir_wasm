@@ -852,6 +852,65 @@ defmodule Codegen.Runtime do
               (local.set $i (i32.sub (local.get $i) (i32.const 1))) (br $fl)))
             (struct.new $binary (local.get $d)))\
         """,
+      # ── the effects ABI: :file/:IO handed to the HOST (virtual fs is a valid backing). These live
+      # in builtins() so they BEAT the fed File/IO beam bodies (the builtin-overrides-beam rule).
+      # Bodies are gated on the :fs_shim/:io_shim flags (set during detection) so an unconditional
+      # emission never references absent host imports — ungated builds get honest traps.
+      # Frames: fs read -> <<1, bytes>> ok | <<0, errcode>> (1 enoent, 2 eacces, 3 eio); write -> errcode.
+      "$posix_atom" =>
+        """
+          (func $posix_atom (param $c i32) (result (ref null eq))
+            (if (i32.eq (local.get $c) (i32.const 1)) (then (return (global.get $atom_enoent))))
+            (if (i32.eq (local.get $c) (i32.const 2)) (then (return (global.get $atom_eacces))))
+            (global.get $atom_eio))\
+        """,
+      "$file.read_file_1" =>
+        if(Process.get(:fs_shim),
+          do: """
+            (func $file.read_file_1 (param $p (ref null eq)) (result (ref null eq))
+              (local $fb (ref $bytes))
+              (local.set $fb (call $bin_bytes (call $host_fs_read (local.get $p))))
+              (if (i32.eq (array.get_u $bytes (local.get $fb) (i32.const 0)) (i32.const 1))
+                (then (return (array.new_fixed $tuple 2 (global.get $atom_ok) (call $subbin (local.get $fb) (i32.const 1) (i32.sub (array.len (local.get $fb)) (i32.const 1)))))))
+              (array.new_fixed $tuple 2 (global.get $atom_error) (call $posix_atom (array.get_u $bytes (local.get $fb) (i32.const 1)))))\
+          """,
+          else: "  (func $file.read_file_1 (param $p (ref null eq)) (result (ref null eq)) (unreachable))"),
+      "$file.write_file_2" =>
+        if(Process.get(:fs_shim),
+          do: """
+            (func $file.write_file_2 (param $p (ref null eq)) (param $d (ref null eq)) (result (ref null eq))
+              (local $c i32)
+              (local.set $c (call $host_fs_write (local.get $p) (local.get $d)))
+              (if (i32.eqz (local.get $c)) (then (return (global.get $atom_ok))))
+              (array.new_fixed $tuple 2 (global.get $atom_error) (call $posix_atom (local.get $c))))\
+          """,
+          else: "  (func $file.write_file_2 (param $p (ref null eq)) (param $d (ref null eq)) (result (ref null eq)) (unreachable))"),
+      "$file.write_file_3" =>
+        """
+          (func $file.write_file_3 (param $p (ref null eq)) (param $d (ref null eq)) (param $modes (ref null eq)) (result (ref null eq))
+            (return_call $file.write_file_2 (local.get $p) (local.get $d)))\
+        """,
+      "$Elixir_46_IO.puts_1" =>
+        if(Process.get(:io_shim),
+          do: """
+            (func $Elixir_46_IO.puts_1 (param $x (ref null eq)) (result (ref null eq))
+              (drop (call $host_io_puts (local.get $x)))
+              (global.get $atom_ok))\
+          """,
+          else: "  (func $Elixir_46_IO.puts_1 (param $x (ref null eq)) (result (ref null eq)) (unreachable))"),
+      "$Elixir_46_IO.puts_2" =>
+        """
+          (func $Elixir_46_IO.puts_2 (param $dev (ref null eq)) (param $x (ref null eq)) (result (ref null eq))
+            (return_call $Elixir_46_IO.puts_1 (local.get $x)))\
+        """,
+      "$Elixir_46_IO.warn_1" =>
+        if(Process.get(:io_shim),
+          do: """
+            (func $Elixir_46_IO.warn_1 (param $x (ref null eq)) (result (ref null eq))
+              (drop (call $host_io_warn (local.get $x)))
+              (global.get $atom_ok))\
+          """,
+          else: "  (func $Elixir_46_IO.warn_1 (param $x (ref null eq)) (result (ref null eq)) (unreachable))"),
       # maps:update/3 — replace an EXISTING key's value; {:badkey, K} error if absent (what
       # Kernel.struct!/2 relies on to validate field names).
       "$maps.update_3" =>

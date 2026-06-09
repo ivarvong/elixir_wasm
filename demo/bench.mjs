@@ -23,7 +23,7 @@ const { proc, sched } = makeProcStubs();
 
 const ms = () => performance.now();
 let t = ms(); const mod = new WebAssembly.Module(bytes); const tCompile = ms() - t;
-t = ms(); e = new WebAssembly.Instance(mod, { big, math, str, http, crypto, proc, sched }).exports; const tInstance = ms() - t;
+t = ms(); e = new WebAssembly.Instance(mod, { big, math, str, http, crypto, proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) }).exports; const tInstance = ms() - t;
 fixtureBin = wrBytes(fixture);                      // build the response binary in wasm ONCE
 
 for (let i = 0; i < 50; i++) e.run();              // warm up (JIT)

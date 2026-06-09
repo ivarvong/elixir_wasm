@@ -172,7 +172,7 @@ defmodule Beam2Wasm do
       end)
     end)
     forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
-              :caseless, :multiline, :dotall, :extended, :unicode] ++
+              :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
              if(exc, do: [:throw, :error, :exit, :EXIT], else: [])
@@ -234,6 +234,21 @@ defmodule Beam2Wasm do
     # split/3 likewise backs split/2.
     regex_split? = regex_split? or regex_more?
     Process.put(:regex_split, regex_split?)
+    # ── the effects ABI: File/IO handed to the HOST (virtual fs is a valid backing) ──
+    fs? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, :file, f, _}} when f in [:read_file, :write_file], op) or
+          match?({_, _, {:extfunc, :file, f, _}, _} when f in [:read_file, :write_file], op)
+      end)
+    end)
+    io? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, IO, f, a}} when {f, a} in [{:puts, 1}, {:puts, 2}, {:warn, 1}], op) or
+          match?({_, _, {:extfunc, IO, f, a}, _} when {f, a} in [{:puts, 1}, {:puts, 2}, {:warn, 1}], op)
+      end)
+    end)
+    Process.put(:fs_shim, fs?)
+    Process.put(:io_shim, io?)
     regex_run? = regex_run3? or regex_more? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Regex, :run, 2}}, op) or match?({_, _, {:extfunc, Regex, :run, 2}, _}, op)
@@ -284,6 +299,8 @@ defmodule Beam2Wasm do
          do: [{Regex, :match?, 2}, {Regex, :scan, 2}, {Regex, :escape, 1}, {Regex, :split, 2},
               {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}],
          else: []) ++
+      (if fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
+      (if io?, do: [{IO, :puts, 1}, {IO, :puts, 2}, {IO, :warn, 1}], else: []) ++
       (if titlecase?, do: [{:string, :titlecase, 1}], else: []) ++
       (if http_get?, do: [{Req, :get!, 1}], else: []) ++
       (if crypto_hash?, do: [{:crypto, :hash, 2}], else: [])
@@ -343,6 +360,8 @@ defmodule Beam2Wasm do
       if(regex_run3?, do: "  (import \"str\" \"re_run_index\" (func $host_re_run_index (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))\n  (import \"str\" \"re_replace_fun\" (func $host_re_replace_fun (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))", else: ""),
       if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(fs?, do: "  (import \"fs\" \"read_file\" (func $host_fs_read (param (ref null eq)) (result (ref null eq))))\n  (import \"fs\" \"write_file\" (func $host_fs_write (param (ref null eq)) (param (ref null eq)) (result i32)))", else: ""),
+      if(io?, do: "  (import \"io\" \"puts\" (func $host_io_puts (param (ref null eq)) (result i32)))\n  (import \"io\" \"warn\" (func $host_io_warn (param (ref null eq)) (result i32)))", else: ""),
       if(titlecase?, do: "  (import \"str\" \"titlecase\" (func $host_str_titlecase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"upchar\" (func $host_str_upchar (param i32) (result i32)))", else: ""),
       if(http_get? or req_in_user, do: "  (import \"http\" \"get\" (func $host_http_get (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(crypto_hash?, do: "  (import \"crypto\" \"hash\" (func $host_crypto_hash (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),

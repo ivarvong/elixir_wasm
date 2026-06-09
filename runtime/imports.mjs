@@ -275,6 +275,58 @@ export const makeCrypto = (getExports, nodeCrypto) => {
   };
 };
 
+// ── The effects ABI: IO (file, console) handed back to the HOST ──────────────────────────────
+// The host decides the backing: real fs on Node, a VIRTUAL filesystem (in-memory Map, or KV/R2/DO
+// on Workers). An unwired effect traps honestly. Frames: fs_read -> <<1, bytes...>> (ok) or
+// <<0, errcode>> (1=enoent, 2=eacces, 3=eio); fs_write -> errcode i32 (0 = ok).
+
+// In-memory virtual filesystem backing: `files` is a Map<string, Uint8Array|string>.
+export const memFsBacking = (files = new Map()) => ({
+  read: (path) => {
+    if (!files.has(path)) return { err: 1 };
+    const v = files.get(path);
+    return typeof v === "string" ? encU.encode(v) : v;
+  },
+  write: (path, bytes) => { files.set(path, bytes); return 0; },
+  files,
+});
+
+// Real-filesystem backing (Node host). `nodeFs` = require("node:fs") injected by the runner.
+export const nodeFsBacking = (nodeFs) => ({
+  read: (path) => {
+    try { return new Uint8Array(nodeFs.readFileSync(path)); }
+    catch (e) { return { err: e.code === "ENOENT" ? 1 : e.code === "EACCES" ? 2 : 3 }; }
+  },
+  write: (path, bytes) => {
+    try { nodeFs.writeFileSync(path, bytes); return 0; }
+    catch (e) { return e.code === "EACCES" ? 2 : 3; }
+  },
+});
+
+export const makeFs = (getExports, backing) => {
+  const { rawBytes, wrBytes, rdBin } = binCodec(getExports);
+  return {
+    read_file: (pathB) => {
+      const r = backing.read(rdBin(pathB));
+      if (r.err) return wrBytes(new Uint8Array([0, r.err]));
+      const buf = new Uint8Array(1 + r.length);
+      buf[0] = 1; buf.set(r, 1);
+      return wrBytes(buf);
+    },
+    write_file: (pathB, dataB) => backing.write(rdBin(pathB), rawBytes(dataB)),
+  };
+};
+
+// Console IO. `sink` collects lines (for differential capture); default = real console.
+export const makeIo = (getExports, sink = null) => {
+  const { rdBin } = binCodec(getExports);
+  const emit = (s, warn) => { if (sink) sink.push(s); else (warn ? console.error : console.log)(s); };
+  return {
+    puts: (b) => { emit(rdBin(b), false); return 0; },
+    warn: (b) => { emit(rdBin(b), true); return 0; },
+  };
+};
+
 // Benign proc/sched stubs for runners that keep GenServer/Finch code alive via DCE but never
 // execute it (the demo overrides the transport adapter). The REAL scheduler lives in
 // runtime/scheduler.mjs; do not use these there.

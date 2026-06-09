@@ -3,14 +3,14 @@
 // shared benign stubs (no process actually runs on the render path).
 //   node runner.mjs <wasm> <seed>
 import fs from "node:fs";
-import { makeBig, makeMath, makeStr, makeProcStubs } from "../../runtime/imports.mjs";
+import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "../../runtime/imports.mjs";
 const [wasmPath, seed] = process.argv.slice(2);
 const big = makeBig(), math = makeMath();
 let e;
 const str = makeStr(() => e);
 const { proc, sched } = makeProcStubs();
 try {
-  e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, proc, sched }).exports;
+  e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str, proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) }).exports;
   const r = e.render(Number(seed));
   const n = e.bin_len(r);
   const u = new Uint8Array(n);
