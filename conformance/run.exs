@@ -272,6 +272,33 @@ defmodule Conf do
           %{fn: "route", sig: {[:bin], :int}, inputs: [["GET /v1/orders"], ["GET /v1/orders/active"], ["POST /v1/orders"], ["PATCH /v1/orders"], ["DELETE /v1/orders"], ["GET /v1/order"]]},
           %{fn: "combo", sig: {[:bin, :bin], :int}, inputs: [["SKU-BOOK", "GET /v1/orders"], ["SKU-GPU", "POST /v1/orders"], ["SKU-UNKNOWN", "DELETE /v1/orders"]]}
         ]},
+      # ---- FLOATS: f64 register file + :math.* host (libm) imports; bit-exact vs the VM ----
+      %{cat: "floats", src: """
+        defmodule FloatOps do
+          def sqrt2(_n), do: :math.sqrt(2.0)
+          def trig(_n), do: :math.sin(1.0) + :math.cos(2.0) * :math.tan(0.5)
+          def powlog(_n), do: :math.pow(2.0, 10.0) - :math.log(100.0)
+          def coerce(n), do: :math.sqrt(n + 0.0) * 2.0          # int arg -> float coercion
+          # haversine LAX->JFK — the documented bit-exact case, in one expression chain.
+          def haversine(_n) do
+            r = 6371.0
+            pi = :math.pi()
+            lat1 = 33.9416 * pi / 180.0
+            lat2 = 40.6413 * pi / 180.0
+            dlat = lat2 - lat1
+            dlon = (-73.7781 - -118.4085) * pi / 180.0
+            a = :math.sin(dlat / 2.0) * :math.sin(dlat / 2.0) +
+                  :math.cos(lat1) * :math.cos(lat2) * :math.sin(dlon / 2.0) * :math.sin(dlon / 2.0)
+            r * 2.0 * :math.atan2(:math.sqrt(a), :math.sqrt(1.0 - a))
+          end
+        end
+        """, extra: [], cases: [
+          %{fn: "sqrt2", sig: {[:int], :float}, inputs: [[0]]},
+          %{fn: "trig", sig: {[:int], :float}, inputs: [[0]]},
+          %{fn: "powlog", sig: {[:int], :float}, inputs: [[0]]},
+          %{fn: "coerce", sig: {[:int], :float}, inputs: [[2], [7]]},
+          %{fn: "haversine", sig: {[:int], :float}, inputs: [[0]]}
+        ]},
       # ---- PROCESSES: spawn/send/receive/self on the JSPI scheduler ----
       %{cat: "processes", proc: true, src: """
         defmodule CProc do
@@ -609,6 +636,9 @@ defmodule Conf do
 
   # canonical string form (must match driver.mjs exactly)
   defp canon(:int, v), do: Integer.to_string(v)
+  # floats: compare the exact IEEE-754 bit pattern (big-endian hex), not a formatted decimal — so a
+  # 1-ULP difference can't hide behind rounding. Driver mirrors this via DataView.setFloat64.
+  defp canon(:float, v), do: "f:" <> Base.encode16(<<v::float-64>>)
   defp canon(:bool, v), do: if(v, do: "true", else: "false")
   defp canon(:atom, v), do: ":" <> Atom.to_string(v)
   defp canon(:bin, v), do: "b:" <> v

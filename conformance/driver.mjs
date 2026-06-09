@@ -36,6 +36,11 @@ const canon = (type, r) => {
     case "atom": return ":" + atoms[r];
     case "bin": return "b:" + fromBin(r);
     case "list": return "[" + toJ(r).join(",") + "]";
+    case "float": {                       // wrapper returns an unboxed f64; hash its IEEE-754 bits (big-endian hex)
+      const dv = new DataView(new ArrayBuffer(8)); dv.setFloat64(0, r);
+      let h = ""; for (let i = 0; i < 8; i++) h += dv.getUint8(i).toString(16).padStart(2, "0");
+      return "f:" + h.toUpperCase();
+    }
     default: throw new Error("bad ret type " + type);
   }
 };

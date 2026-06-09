@@ -137,4 +137,19 @@ defmodule Ledger do
     x = Bitwise.bxor(s2, Bitwise.bsr(s2, 33))
     {rem(x, m), s2}
   end
+
+  # ── investigation helper: name the operation at a given op index ──
+  # After the fuzz harness bisects to the first diverging op count N, it calls this to report WHICH
+  # operation diverged. Replays the PRNG exactly as loop/6 does: 4 rng draws per op (op, id, id2, amt).
+  @op_names {:open, :deposit, :withdraw, :transfer, :accrue, :snapshot}
+  def op_name(seed, i) when i >= 1 do
+    s = advance(rem(abs(seed) + 1, @lmod), i - 1)
+    {op, _} = rng(s, 6)
+    elem(@op_names, op)
+  end
+  defp advance(s, 0), do: s
+  defp advance(s, k) do
+    {_, s1} = rng(s, 6); {_, s2} = rng(s1, @k); {_, s3} = rng(s2, @k); {_, s4} = rng(s3, 100_000)
+    advance(s4, k - 1)
+  end
 end

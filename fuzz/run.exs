@@ -140,7 +140,10 @@ defmodule Fuzz do
     IO.puts("  first diverging op count: nops=#{first}")
     IO.puts("    Wasm = #{w}")
     IO.puts("    VM   = #{v}")
-    IO.puts("  => op ##{first} (1-indexed) is the first miscompiled operation for this seed.\n")
+    # Name the op(s) around the divergence so the finding is actionable, not just "op #N".
+    near = for i <- max(1, first - 2)..first, do: "##{i}=#{Ledger.op_name(seed, i)}"
+    IO.puts("  => op ##{first} (1-indexed) is the first miscompiled operation for this seed.")
+    IO.puts("     ops near divergence: #{Enum.join(near, "  ")}\n")
   end
 
   # invariant: eq(lo) is equal, eq(hi) is NOT. Returns smallest n in (lo,hi] that differs.
