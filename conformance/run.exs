@@ -602,8 +602,9 @@ defmodule Conf do
           # process programs: each case runs in a fresh JSPI scheduler (int args only)
           Enum.map(flat, fn c ->
             intargs = Enum.map(c.vals, &to_string/1)
-            case System.cmd(@node, ["--experimental-wasm-jspi", @runproc, wasmf, c.fn | intargs], stderr_to_stdout: true) do
+            case Tooling.cmd(@node, ["--experimental-wasm-jspi", @runproc, wasmf, c.fn | intargs], stderr_to_stdout: true) do
               {out, 0} -> String.trim(out)
+              {_, :timeout} -> "TIMEOUT"
               _ -> "PROC_ERR"
             end
           end)
@@ -613,8 +614,11 @@ defmodule Conf do
             %{name: c.fn, ret: drv_ret(c.rett),
               args: Enum.zip(c.argt, c.vals) |> Enum.map(fn {t, v} -> %{type: drv_arg(t), val: v} end)}
           end)))
-          {out, 0} = System.cmd(@node, [@driver, wasmf, watf, casesf])
-          if out == "", do: [], else: String.split(out, "\n")
+          case Tooling.cmd(@node, [@driver, wasmf, watf, casesf]) do
+            {out, 0} -> if out == "", do: [], else: String.split(out, "\n")
+            {_, :timeout} -> Enum.map(flat, fn _ -> "TIMEOUT" end)
+            _ -> Enum.map(flat, fn _ -> "DRIVER_ERR" end)
+          end
         end
       rescue
         _ -> Enum.map(flat, fn _ -> "BUILD_ERR" end)

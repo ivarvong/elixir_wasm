@@ -154,5 +154,82 @@ defmodule Tooling do
     [wat, "-o", out, "-all", "--disable-custom-descriptors"] ++ extra
   end
 
+  # ── bounded subprocess execution ─────────────────────────────────────────────
+
+  @default_cmd_timeout_ms 120_000
+
+  @doc """
+  `System.cmd/3`-style runner with a hard wall-clock timeout, so an infinite loop
+  in compiled Wasm fails the harness instead of hanging it.
+
+  Returns `{output, status}` where `status` is the integer exit code, or the atom
+  `:timeout` if the child exceeded the deadline — in which case the OS child is
+  killed (a CPU-bound Wasm loop won't write, so closing the port alone can't reap
+  it). Callers map `:timeout` to a sentinel string that can never equal a real
+  canonical result, matching the existing BUILD_ERR/PROC_ERR/ORACLE_ERR pattern.
+
+  Kills the direct child only (its `os_pid`). The harnesses spawn `node` directly
+  and `node` runs the Wasm in-process with no long-lived forked children, so the
+  direct kill reaps the hang. (A child that forks a wrapper, e.g. `sh -c "sleep"`,
+  could orphan the grandchild — not a pattern any harness uses.)
+
+  Options:
+    * `:timeout` — milliseconds before the child is killed (default #{@default_cmd_timeout_ms})
+    * `:stderr_to_stdout` — fold stderr into the captured output (default false).
+      Leave false for driver calls whose stdout is parsed; stderr then inherits
+      the parent's (goes to the console) exactly like `System.cmd/3` without the flag.
+  """
+  def cmd(exe, args, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout, @default_cmd_timeout_ms)
+    merge_stderr? = Keyword.get(opts, :stderr_to_stdout, false)
+
+    port_opts = [:binary, :exit_status, :hide, {:args, args}]
+    port_opts = if merge_stderr?, do: [:stderr_to_stdout | port_opts], else: port_opts
+
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    port = Port.open({:spawn_executable, exe}, port_opts)
+
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, p} -> p
+        _ -> nil
+      end
+
+    collect_cmd(port, os_pid, deadline, [])
+  end
+
+  defp collect_cmd(port, os_pid, deadline, acc) do
+    remaining = max(0, deadline - System.monotonic_time(:millisecond))
+
+    receive do
+      {^port, {:data, data}} ->
+        collect_cmd(port, os_pid, deadline, [acc, data])
+
+      {^port, {:exit_status, status}} ->
+        {IO.iodata_to_binary(acc), status}
+    after
+      remaining ->
+        kill_os_pid(os_pid)
+        close_port(port)
+        {IO.iodata_to_binary(acc), :timeout}
+    end
+  end
+
+  defp kill_os_pid(nil), do: :ok
+
+  defp kill_os_pid(os_pid) do
+    System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp close_port(port) do
+    Port.close(port)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
   defp fail(msg), do: raise("[tooling] " <> String.trim(msg))
 end

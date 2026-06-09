@@ -63,8 +63,11 @@ defmodule Fuzz do
     end)
     casesf = Path.join(@tmp, "ledger.cases.json")
     File.write!(casesf, json(cases))
-    {out, 0} = System.cmd(@node, [@driver, wasmf, watf, casesf])
-    if out == "", do: [], else: String.split(out, "\n")
+    case Tooling.cmd(@node, [@driver, wasmf, watf, casesf]) do
+      {out, 0} -> if out == "", do: [], else: String.split(out, "\n")
+      {_, :timeout} -> Enum.map(pairs, fn _ -> "TIMEOUT" end)
+      {out, st} -> raise "fuzz driver exited #{st}: #{String.slice(out, 0, 200)}"
+    end
   end
 
   # --- the VM oracle: the same loaded Ledger module, in-process ---

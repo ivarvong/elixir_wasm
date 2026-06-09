@@ -156,12 +156,12 @@ defmodule Gaps do
       rescue _ -> "ORACLE_ERR" catch _, _ -> "ORACLE_ERR" end
       got =
         if p.proc do
-          case System.cmd(@node, ["--experimental-wasm-jspi", @runproc, wasmf, "run", to_string(seed)], stderr_to_stdout: true) do
-            {out, 0} -> String.trim(out); _ -> "PROC_ERR"
+          case Tooling.cmd(@node, ["--experimental-wasm-jspi", @runproc, wasmf, "run", to_string(seed)], stderr_to_stdout: true) do
+            {out, 0} -> String.trim(out); {_, :timeout} -> "TIMEOUT"; _ -> "PROC_ERR"
           end
         else
-          case System.cmd(@node, [@runner, wasmf, to_string(seed)]) do
-            {out, 0} -> String.trim(out); _ -> "DRIVER_ERR"
+          case Tooling.cmd(@node, [@runner, wasmf, to_string(seed)]) do
+            {out, 0} -> String.trim(out); {_, :timeout} -> "TIMEOUT"; _ -> "DRIVER_ERR"
           end
         end
       {seed, exp == got, exp, got}
