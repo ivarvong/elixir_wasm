@@ -75,9 +75,16 @@ Measured 2026-06-10 (deploy `71c3b65f`, PoP EWR):
   the 3.7 KB document through `POST /render`) — the same differential gate as every suite,
   now over the public internet.
 - Local workerd (compute floor): p50 = 1.0 ms end-to-end HTTP per render.
-- Production TTFB from a residential client: p50 ≈ 88 ms, of which ~50–60 ms is TCP+TLS to the
-  PoP and one RTT rides the request — worker processing is tens of ms at most, with the p99
-  (~414 ms) showing occasional cold isolates for the 2.9 MB module.
+- **Load test** (autocannon from a residential client, warm sustained load):
+  - `GET /?seed=1` — 25 connections × 30 s = **15,000 requests, ~500 req/s, zero errors**:
+    p50 = 46 ms · p90 = 75 ms · **p99 = 134 ms** · p99.9 = 505 ms (the cold-isolate tail).
+    The earlier "p99 414 ms" figure was 50 *sequential* fresh-TLS curls — handshake + cold-start
+    noise, not service latency.
+  - `POST /render` (3.7 KB markdown upload, the heavy ~12 ms-CPU render) — 15 connections × 20 s
+    = 2,000 requests, zero errors: p50 = 152 ms · p99 = 567 ms.
+  - Byte-identical re-verified after the 17k requests.
+- Network floor from this client: ~25 ms RTT to EWR — subtract that to read the numbers as
+  service time. Local workerd compute floor: p50 = 1.0 ms.
 - Upload: 2995 KiB raw, **505 KiB gzipped**.
 
 ## What it took (each gap BUILT, not worked around — see LIMITATIONS.md)
