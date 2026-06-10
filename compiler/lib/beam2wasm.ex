@@ -248,8 +248,18 @@ defmodule Beam2Wasm do
           match?({_, _, {:extfunc, IO, f, a}, _} when {f, a} in [{:puts, 1}, {:puts, 2}, {:warn, 1}], op)
       end)
     end)
+    # :sql_host.exec/2 — a SQL database handed to the host, like :file. The backing decides:
+    # node:sqlite locally, ctx.storage.sql inside a Durable Object. SQL text + JSON-encoded
+    # params in, JSON-encoded rows out (the program uses real Jason on both sides of the call).
+    sql? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, :sql_host, :exec, 2}}, op) or
+          match?({_, _, {:extfunc, :sql_host, :exec, 2}, _}, op)
+      end)
+    end)
     Process.put(:fs_shim, fs?)
     Process.put(:io_shim, io?)
+    Process.put(:sql_shim, sql?)
     # :unicode NF* normalization -> host (JS String.prototype.normalize — same Unicode tables)
     uninorm? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
@@ -321,6 +331,7 @@ defmodule Beam2Wasm do
               {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}, {Regex, :named_captures, 2}],
          else: []) ++
       (if fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
+      (if sql?, do: [{:sql_host, :exec, 2}], else: []) ++
       (if fltfmt?,
          do: [{:erlang, :float_to_binary, 1}, {:erlang, :float_to_binary, 2},
               {:erlang, :float_to_list, 1}, {:erlang, :float_to_list, 2}],
@@ -387,6 +398,7 @@ defmodule Beam2Wasm do
       if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))\n  (import \"str\" \"re_replace_fun\" (func $host_re_replace_fun (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))", else: ""),
       if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_named\" (func $host_re_named (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(fs?, do: "  (import \"fs\" \"read_file\" (func $host_fs_read (param (ref null eq)) (result (ref null eq))))\n  (import \"fs\" \"write_file\" (func $host_fs_write (param (ref null eq)) (param (ref null eq)) (result i32)))", else: ""),
+      if(sql?, do: "  (import \"sql\" \"exec\" (func $host_sql_exec (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(io?, do: "  (import \"io\" \"puts\" (func $host_io_puts (param (ref null eq)) (result i32)))\n  (import \"io\" \"warn\" (func $host_io_warn (param (ref null eq)) (result i32)))", else: ""),
       if(uninorm?, do: Enum.map_join(~w(nfc nfd nfkc nfkd), "\n", fn f -> "  (import \"str\" \"#{f}\" (func $host_#{f} (param (ref null eq)) (result (ref null eq))))" end), else: ""),
       if(fltfmt?, do: "  (import \"str\" \"flt_fmt\" (func $host_flt_fmt (param f64) (param i32) (param i32) (result (ref null eq))))", else: ""),

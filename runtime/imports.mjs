@@ -440,6 +440,23 @@ export const nodeFsBacking = (nodeFs) => ({
   },
 });
 
+// ── SQL as a host effect (:sql_host.exec/2): SQL text + JSON params in, JSON rows out.
+// The backing decides the engine: node:sqlite locally, the Durable Object's synchronous
+// ctx.storage.sql in production. A SQL error throws -> an honest trap with the message.
+export const makeSql = (getExports, backing) => {
+  const { rdBin, wrBin } = binCodec(getExports);
+  return { exec: (qB, pB) => wrBin(backing(rdBin(qB), rdBin(pB))) };
+};
+
+// node:sqlite backing — `db` is a DatabaseSync; .all() executes ANY statement and returns
+// its rows ([] for non-returning statements), so one path covers DDL/DML/SELECT.
+export const nodeSqliteBacking = (db) => (sql, paramsJson) =>
+  JSON.stringify(db.prepare(sql).all(...JSON.parse(paramsJson)));
+
+// Durable Object backing — `sqlStorage` is this.ctx.storage.sql (synchronous in DOs).
+export const doSqliteBacking = (sqlStorage) => (sql, paramsJson) =>
+  JSON.stringify(sqlStorage.exec(sql, ...JSON.parse(paramsJson)).toArray());
+
 export const makeFs = (getExports, backing) => {
   const { rawBytes, wrBytes, rdBin } = binCodec(getExports);
   return {

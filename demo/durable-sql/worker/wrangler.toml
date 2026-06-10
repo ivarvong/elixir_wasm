@@ -1,0 +1,19 @@
+# Elixir querying SQLite inside a Durable Object:
+#   elixir ../run.exs        # the differential gate (BEAM vs WasmGC, same engine) first
+#   cp ../_work/ledger.wasm . && cp ../../../runtime/imports.mjs .
+#   npx wrangler deploy
+name = "elixir-sqlite-ledger"
+main = "worker.mjs"
+compatibility_date = "2026-06-01"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
+
+[durable_objects]
+bindings = [{ name = "LEDGER", class_name = "LedgerDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LedgerDO"]

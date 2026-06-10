@@ -959,6 +959,17 @@ defmodule Codegen.Runtime do
           (func $file.write_file_3 (param $p (ref null eq)) (param $d (ref null eq)) (param $modes (ref null eq)) (result (ref null eq))
             (return_call $file.write_file_2 (local.get $p) (local.get $d)))\
         """,
+      # :sql_host.exec(sql_binary, params_json_binary) -> rows_json_binary. A SQL database as a
+      # host effect, exactly like :file — the backing decides: node:sqlite locally, the Durable
+      # Object's synchronous ctx.storage.sql in production. A SQL error throws host-side -> an
+      # honest trap carrying the SQLite message.
+      "$sql_host.exec_2" =>
+        if(Process.get(:sql_shim),
+          do: """
+            (func $sql_host.exec_2 (param $q (ref null eq)) (param $p (ref null eq)) (result (ref null eq))
+              (return_call $host_sql_exec (local.get $q) (local.get $p)))\
+          """,
+          else: "  (func $sql_host.exec_2 (param $q (ref null eq)) (param $p (ref null eq)) (result (ref null eq)) (unreachable))"),
       "$Elixir_46_IO.puts_1" =>
         if(Process.get(:io_shim),
           do: """
