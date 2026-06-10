@@ -449,6 +449,67 @@ export const nodeFsBacking = (nodeFs) => ({
   },
 });
 
+// ── terms across the boundary: walk a RETURNED WasmGC term graph into a live JS value.
+// Built on the introspection exports (is_int/int_val, is_float/float_val, is_bin/bin_*,
+// is_cons/head_term/tail, is_tuple/tup_*, is_map/map_kv, is_atom/atom_name). Conventions:
+//   [] (null ref) -> []        atoms true/false/nil -> true/false/null
+//   other atom    -> ":name" (via the atom_name export when the build carries the name table,
+//                    else ":idxN")    tuple -> JS array    map -> object (keys stringified)
+//   int -> Number when safe, else decimal string (exact bignums survive JSON)
+export const termToJs = (e, v) => {
+  const dec = new TextDecoder();
+  const rdBin = (b) => {
+    const n = e.bin_len(b);
+    const u = new Uint8Array(n);
+    for (let i = 0; i < n; i++) u[i] = e.bin_get(b, i);
+    return dec.decode(u);
+  };
+  const atomName = (t) => (e.atom_name ? rdBin(e.atom_name(t)) : "idx" + e.atom_idx(t));
+  const walk = (t) => {
+    if (t === null) return [];
+    if (e.is_atom(t)) {
+      const name = atomName(t);
+      if (name === "true") return true;
+      if (name === "false") return false;
+      if (name === "nil") return null;
+      return ":" + name;
+    }
+    if (e.is_int(t)) {
+      if (e.int_val) {
+        const b = e.int_val(t);                       // BigInt, exact at any size
+        return b >= -9007199254740991n && b <= 9007199254740991n ? Number(b) : String(b);
+      }
+      return e.get_int(t);
+    }
+    if (e.is_float && e.is_float(t)) return e.float_val(t);
+    if (e.is_bin(t)) return rdBin(t);
+    if (e.is_cons(t)) {
+      const out = [];
+      let l = t;
+      while (l !== null && e.is_cons(l)) { out.push(walk(e.head_term(l))); l = e.tail(l); }
+      return out;
+    }
+    if (e.is_map && e.is_map(t)) {
+      const kv = e.map_kv(t);                          // interleaved [k0, v0, k1, v1, ...]
+      const n = e.tup_len(kv);
+      const obj = {};
+      for (let i = 0; i < n; i += 2) {
+        const k = walk(e.tup_get(kv, i));
+        obj[typeof k === "string" ? k : JSON.stringify(k)] = walk(e.tup_get(kv, i + 1));
+      }
+      return obj;
+    }
+    if (e.is_tuple(t)) {
+      const n = e.tup_len(t);
+      const out = [];
+      for (let i = 0; i < n; i++) out.push(walk(e.tup_get(t, i)));
+      return out;
+    }
+    return "#opaque";                                  // funs/pids/refs: no JSON shape
+  };
+  return walk(v);
+};
+
 // ── SQL as a host effect (:sql_host.exec/2): SQL text + JSON params in, JSON rows out.
 // The backing decides the engine: node:sqlite locally, the Durable Object's synchronous
 // ctx.storage.sql in production. A SQL error throws -> an honest trap with the message.

@@ -444,6 +444,37 @@ defmodule Beam2Wasm do
       if(reds, do: "  (global $reds (mut i32) (i32.const #{reds}))", else: ""),
       "  (global $refctr (mut i32) (i32.const 0))",   # make_ref source: a monotonic counter (after imports)
       "  (global $ptermtab (mut (ref null eq)) (ref.null none))",  # :persistent_term storage (assoc list)
+      # ── terms across the boundary: the host walks a RETURNED TERM GRAPH directly (no
+      # serialization inside the module). Complements the is_atom/tup_get/bin_* bridge in
+      # helpers(); imports.mjs termToJs() is the generic walker built on these.
+      """
+        (func (export "head_term") (param $l (ref null eq)) (result (ref null eq))
+          (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+        (func (export "is_map") (param $x (ref null eq)) (result i32) (ref.test (ref $map) (local.get $x)))
+        (func (export "map_kv") (param $m (ref null eq)) (result (ref null eq))
+          (call $map_kv (local.get $m)))
+      """,
+      if(bignum,
+        do: """
+          (func (export "is_int") (param $x (ref null eq)) (result i32)
+            (i32.or (i32.or (ref.test (ref i31) (local.get $x)) (ref.test (ref $i64) (local.get $x))) (ref.test (ref $big) (local.get $x))))
+          (func (export "int_val") (param $x (ref null eq)) (result externref) (call $to_extbig (local.get $x)))
+        """,
+        else: """
+          (func (export "is_int") (param $x (ref null eq)) (result i32) (ref.test (ref i31) (local.get $x)))
+        """),
+      if(flt,
+        do: """
+          (func (export "is_float") (param $x (ref null eq)) (result i32) (ref.test (ref $float) (local.get $x)))
+          (func (export "float_val") (param $x (ref null eq)) (result f64) (struct.get $float 0 (ref.cast (ref $float) (local.get $x))))
+        """,
+        else: "  (func (export \"is_float\") (param $x (ref null eq)) (result i32) (i32.const 0))"),
+      if(atom_names?,
+        do: """
+          (func (export "atom_name") (param $a (ref null eq)) (result (ref null eq))
+            (array.get $tuple (call $atomnames_get) (struct.get $atom 0 (ref.cast (ref $atom) (local.get $a)))))
+        """,
+        else: ""),
       "  (global $monotime (mut i32) (i32.const 0))",  # erlang:monotonic_time source (monotonic, distinct)
       atom_globals,
       atomname_global,

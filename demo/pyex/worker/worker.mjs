@@ -8,7 +8,7 @@
 // One instance per isolate; each request evals in a fresh pyex Ctx (the only shared state is
 // pyex's pure builtins-env cache). A runaway program hits the platform CPU cap and returns 500.
 import pyexModule from "./pyex_wasm.wasm";
-import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "./imports.mjs";
+import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking, termToJs } from "./imports.mjs";
 
 const big = makeBig(), math = makeMath();
 let e;
@@ -43,6 +43,17 @@ export default {
       if (source.length > 65536) return new Response("source too large (64KB max)", { status: 413 });
       try {
         const t0 = Date.now();
+        if (url.pathname === "/json") {
+          // terms across the boundary: eval_value returns {:ok, value, stdout} | {:error, kind, msg}
+          // as a LIVE WasmGC term; termToJs walks the graph and JSON is just the last-inch render.
+          const walked = termToJs(e, e.eval_value(toBin(source)));
+          const body = walked[0] === ":ok"
+            ? { ok: true, result: walked[1], stdout: walked[2] }
+            : { ok: false, error: { kind: walked[1], message: walked[2] } };
+          return new Response(JSON.stringify(body), {
+            headers: { "content-type": "application/json", "x-eval-ms": String(Date.now() - t0) },
+          });
+        }
         const out = fromBin(e.eval(toBin(source)));
         return new Response(out, {
           headers: { "content-type": "text/plain; charset=utf-8", "x-eval-ms": String(Date.now() - t0) },
