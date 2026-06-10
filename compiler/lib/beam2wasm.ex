@@ -172,7 +172,7 @@ defmodule Beam2Wasm do
       end)
     end)
     forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
-              :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio] ++
+              :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio, :badarg, :short, :decimals, :compact, :undef, :utf8, :latin1] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
              if(exc, do: [:throw, :error, :exit, :EXIT], else: [])
@@ -194,8 +194,8 @@ defmodule Beam2Wasm do
     # any call form (incl. tail calls) OR a captured `&Atom.to_string/1` (literal fun) needs the table.
     atom_names? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
-        match?({_, _, {:extfunc, :erlang, :atom_to_binary, _}}, op) or
-          match?({_, _, {:extfunc, :erlang, :atom_to_binary, _}, _}, op)
+        match?({_, _, {:extfunc, :erlang, f, _}} when f in [:atom_to_binary, :binary_to_existing_atom, :list_to_existing_atom], op) or
+          match?({_, _, {:extfunc, :erlang, f, _}, _} when f in [:atom_to_binary, :binary_to_existing_atom, :list_to_existing_atom], op)
       end)
     end) or Enum.any?(collect_literal_funs(user), &match?({:erlang, :atom_to_binary, _}, &1)) or to_string?(user) or crypto_hash?
     Process.put(:atom_names, atom_names?)
@@ -249,6 +249,22 @@ defmodule Beam2Wasm do
     end)
     Process.put(:fs_shim, fs?)
     Process.put(:io_shim, io?)
+    # :unicode NF* normalization -> host (JS String.prototype.normalize — same Unicode tables)
+    uninorm? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, :unicode, f, 1}} when f in [:characters_to_nfc_binary, :characters_to_nfd_binary, :characters_to_nfkc_binary, :characters_to_nfkd_binary], op) or
+          match?({_, _, {:extfunc, :unicode, f, 1}, _} when f in [:characters_to_nfc_binary, :characters_to_nfd_binary, :characters_to_nfkc_binary, :characters_to_nfkd_binary], op)
+      end)
+    end)
+    Process.put(:uninorm, uninorm?)
+    # float -> text (float_to_binary/list): host formatter (Ryu digits are unique; the host applies
+    # Erlang's exact formatting conventions). Needs float mode for the $float type.
+    fltfmt? = flt and Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, :erlang, f, _}} when f in [:float_to_binary, :float_to_list], op) or
+          match?({_, _, {:extfunc, :erlang, f, _}, _} when f in [:float_to_binary, :float_to_list], op)
+      end)
+    end)
     regex_run? = regex_run3? or regex_more? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Regex, :run, 2}}, op) or match?({_, _, {:extfunc, Regex, :run, 2}, _}, op)
@@ -288,7 +304,11 @@ defmodule Beam2Wasm do
     math_defined = if flt, do: MapSet.new(math_funs_used(user)), else: MapSet.new()
     # atom_to_binary/{1,2} are provided below (via the $atomnames table), not stubbed.
     extra_defined =
-      (if atom_names?, do: [{:erlang, :atom_to_binary, 1}, {:erlang, :atom_to_binary, 2}], else: []) ++
+      (if atom_names?,
+         do: [{:erlang, :atom_to_binary, 1}, {:erlang, :atom_to_binary, 2},
+              {:erlang, :binary_to_existing_atom, 1}, {:erlang, :binary_to_existing_atom, 2},
+              {:erlang, :list_to_existing_atom, 1}],
+         else: []) ++
       (if strcase?, do: [{String.Unicode, :upcase, 3}, {String.Unicode, :downcase, 3}], else: []) ++
       (if to_string?(user), do: [{String.Chars, :to_string, 1}], else: []) ++
       (if regex_split?, do: [{Regex, :split, 3}], else: []) ++
@@ -300,6 +320,10 @@ defmodule Beam2Wasm do
               {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}],
          else: []) ++
       (if fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
+      (if fltfmt?,
+         do: [{:erlang, :float_to_binary, 1}, {:erlang, :float_to_binary, 2},
+              {:erlang, :float_to_list, 1}, {:erlang, :float_to_list, 2}],
+         else: []) ++
       (if io?, do: [{IO, :puts, 1}, {IO, :puts, 2}, {IO, :warn, 1}], else: []) ++
       (if titlecase?, do: [{:string, :titlecase, 1}], else: []) ++
       (if http_get?, do: [{Req, :get!, 1}], else: []) ++
@@ -362,12 +386,14 @@ defmodule Beam2Wasm do
       if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(fs?, do: "  (import \"fs\" \"read_file\" (func $host_fs_read (param (ref null eq)) (result (ref null eq))))\n  (import \"fs\" \"write_file\" (func $host_fs_write (param (ref null eq)) (param (ref null eq)) (result i32)))", else: ""),
       if(io?, do: "  (import \"io\" \"puts\" (func $host_io_puts (param (ref null eq)) (result i32)))\n  (import \"io\" \"warn\" (func $host_io_warn (param (ref null eq)) (result i32)))", else: ""),
+      if(uninorm?, do: Enum.map_join(~w(nfc nfd nfkc nfkd), "\n", fn f -> "  (import \"str\" \"#{f}\" (func $host_#{f} (param (ref null eq)) (result (ref null eq))))" end), else: ""),
+      if(fltfmt?, do: "  (import \"str\" \"flt_fmt\" (func $host_flt_fmt (param f64) (param i32) (param i32) (result (ref null eq))))", else: ""),
       if(titlecase?, do: "  (import \"str\" \"titlecase\" (func $host_str_titlecase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"upchar\" (func $host_str_upchar (param i32) (result i32)))", else: ""),
       if(http_get? or req_in_user, do: "  (import \"http\" \"get\" (func $host_http_get (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(crypto_hash?, do: "  (import \"crypto\" \"hash\" (func $host_crypto_hash (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       # Wasm exception: (class, reason, stacktrace) all as terms. raise/throw/error throw it;
       # a try-containing function's dispatch loop is wrapped in a try_table that catches it.
-      if(exc, do: "  (tag $exc (param (ref null eq)) (param (ref null eq)) (param (ref null eq)))", else: ""),
+      if(exc, do: "  (tag $exc (export \"exc\") (param (ref null eq)) (param (ref null eq)) (param (ref null eq)))", else: ""),
       if(reds, do: "  (global $reds (mut i32) (i32.const #{reds}))", else: ""),
       "  (global $refctr (mut i32) (i32.const 0))",   # make_ref source: a monotonic counter (after imports)
       "  (global $monotime (mut i32) (i32.const 0))",  # erlang:monotonic_time source (monotonic, distinct)
@@ -378,7 +404,71 @@ defmodule Beam2Wasm do
         (func $erlang.atom_to_binary_1 (param $x (ref null eq)) (result (ref null eq))
           (array.get $tuple (global.get $atomnames) (struct.get $atom 0 (ref.cast (ref $atom) (local.get $x)))))
         (func $erlang.atom_to_binary_2 (param $x (ref null eq)) (param $enc (ref null eq)) (result (ref null eq))
-          (return_call $erlang.atom_to_binary_1 (local.get $x)))\
+          (return_call $erlang.atom_to_binary_1 (local.get $x)))
+        (func $erlang.binary_to_existing_atom_1 (param $b (ref null eq)) (result (ref null eq))
+          (local $i i32) (local $n i32)
+          (local.set $n (array.len (global.get $atomnames)))
+          (block $d (loop $l
+            (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
+            (if (i32.eqz (call $term_compare (array.get $tuple (global.get $atomnames) (local.get $i)) (local.get $b)))
+              (then (return (struct.new $atom (local.get $i)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+          (drop (call $erlang.error_1 (global.get $atom_badarg)))
+          (unreachable))
+        (func $erlang.binary_to_existing_atom_2 (param $b (ref null eq)) (param $enc (ref null eq)) (result (ref null eq))
+          (return_call $erlang.binary_to_existing_atom_1 (local.get $b)))
+        (func $erlang.list_to_existing_atom_1 (param $l (ref null eq)) (result (ref null eq))
+          (local $n i32) (local $t (ref null eq)) (local $d (ref $bytes)) (local $i i32)
+          (local.set $t (local.get $l))
+          (block $c (loop $cl (br_if $c (i32.eqz (ref.test (ref $cons) (local.get $t))))
+            (local.set $n (i32.add (local.get $n) (i32.const 1)))
+            (local.set $t (struct.get $cons 1 (ref.cast (ref $cons) (local.get $t)))) (br $cl)))
+          (local.set $d (array.new_default $bytes (local.get $n)))
+          (local.set $t (local.get $l))
+          (block $f (loop $fl (br_if $f (i32.ge_u (local.get $i) (local.get $n)))
+            (array.set $bytes (local.get $d) (local.get $i) (i31.get_s (ref.cast (ref i31) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $t))))))
+            (local.set $t (struct.get $cons 1 (ref.cast (ref $cons) (local.get $t))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $fl)))
+          (return_call $erlang.binary_to_existing_atom_1 (struct.new $binary (local.get $d))))\
+      """, else: ""),
+      # float -> text. Parse the opts list to a host-formatter mode: [] -> default 20-digit
+      # scientific; :short -> shortest-round-trip Erlang format; {:decimals, D} (+ :compact).
+      if(fltfmt?, do: """
+        (func $erlang.float_to_binary_2 (param $x (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+          (local $mode i32) (local $dec i32) (local $l (ref null eq)) (local $h (ref null eq)) (local $t (ref $tuple)) (local $compact i32)
+          (local.set $mode (i32.const 1))
+          (local.set $l (local.get $opts))
+          (block $d (loop $lp
+            (br_if $d (i32.eqz (ref.test (ref $cons) (local.get $l))))
+            (local.set $h (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+            (if (ref.eq (local.get $h) (global.get $atom_short)) (then (local.set $mode (i32.const 0))))
+            (if (ref.eq (local.get $h) (global.get $atom_compact)) (then (local.set $compact (i32.const 1))))
+            (if (ref.test (ref $tuple) (local.get $h)) (then
+              (local.set $t (ref.cast (ref $tuple) (local.get $h)))
+              (if (i32.and (i32.eq (array.len (local.get $t)) (i32.const 2))
+                     (ref.eq (array.get $tuple (local.get $t) (i32.const 0)) (global.get $atom_decimals)))
+                (then (local.set $mode (i32.const 2))
+                      (local.set $dec (i31.get_s (ref.cast (ref i31) (array.get $tuple (local.get $t) (i32.const 1)))))))))
+            (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+            (br $lp)))
+          (if (i32.and (i32.eq (local.get $mode) (i32.const 2)) (local.get $compact)) (then (local.set $mode (i32.const 3))))
+          (call $host_flt_fmt (struct.get $float 0 (ref.cast (ref $float) (local.get $x))) (local.get $mode) (local.get $dec)))
+        (func $erlang.float_to_binary_1 (param $x (ref null eq)) (result (ref null eq))
+          (return_call $erlang.float_to_binary_2 (local.get $x) (ref.null none)))
+        (func $flt_bin_charlist (param $b (ref null eq)) (result (ref null eq))
+          (local $a (ref $bytes)) (local $i i32) (local $out (ref null eq))
+          (local.set $a (struct.get $binary 0 (ref.cast (ref $binary) (local.get $b))))
+          (local.set $i (array.len (local.get $a)))
+          (block $d (loop $l
+            (br_if $d (i32.eqz (local.get $i)))
+            (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+            (local.set $out (struct.new $cons (ref.i31 (array.get_u $bytes (local.get $a) (local.get $i))) (local.get $out)))
+            (br $l)))
+          (local.get $out))
+        (func $erlang.float_to_list_2 (param $x (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+          (return_call $flt_bin_charlist (call $erlang.float_to_binary_2 (local.get $x) (local.get $opts))))
+        (func $erlang.float_to_list_1 (param $x (ref null eq)) (result (ref null eq))
+          (return_call $flt_bin_charlist (call $erlang.float_to_binary_2 (local.get $x) (ref.null none))))\
       """, else: ""),
       # String.Chars.to_string/1 — the protocol entry for string interpolation `#{x}` and Enum.join.
       # Dispatch on the runtime type to a binary: binaries pass through; integers/atoms convert; nil → "".
@@ -1222,7 +1312,8 @@ defmodule Beam2Wasm do
       |> Enum.sort_by(&elem(&1, 0))
     keyset =
       "    (local.set $key (i64.add (i64.mul (i64.extend_i32_u (struct.get $atom 0 (ref.cast (ref $atom) (local.get $mod)))) (i64.const #{mul})) (i64.extend_i32_u (struct.get $atom 0 (ref.cast (ref $atom) (local.get $fun))))))"
-    "  (func $apply_#{n}#{params} (result (ref null eq)) (local $key i64)\n#{keyset}\n#{bisect_apply(clauses)}\n    (unreachable))"
+    "  (func $apply_#{n}#{params} (result (ref null eq)) (local $key i64)\n#{keyset}\n#{bisect_apply(clauses)}\n" <>
+      "    (drop (call $erlang.error_1 (array.new_fixed $tuple 3 (global.get $atom_undef) (local.get $mod) (local.get $fun))))\n    (unreachable))"
   end
 
   # balanced binary-search tree over sorted {key, call} clauses; each leaf is an exact-key guard.

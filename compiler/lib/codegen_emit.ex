@@ -216,11 +216,16 @@ defmodule Codegen.Emit do
         {:test, :has_map_fields, {:f, fail}, src, {:list, keys}} ->
           {Enum.map(keys, fn key -> "(if (i32.eqz (call $map_has #{val.(src)} #{val.(key)})) (then #{jump.(fail)}))" end), false}
         {:get_map_elements, {:f, fail}, src, {:list, pairs}} ->
-          lines = pairs |> Enum.chunk_every(2) |> Enum.flat_map(fn [key, dst] ->
-            ["(local.set $mn (call $map_get #{val.(src)} #{val.(key)}))",
-             "(if (ref.is_null (local.get $mn)) (then #{jump.(fail)}))",
-             set.(dst, "(struct.get $mnode 1 (ref.as_non_null (local.get $mn)))")]
-          end)
+          # BEAM treats this as ONE instruction: every key is fetched from the ORIGINAL map even
+          # when a destination register aliases the source (e.g. dst1 == src — Earmark's _parse/4
+          # does exactly that). Stash the map in $tmp first so later keys never read a clobbered src.
+          lines =
+            ["(local.set $tmp #{val.(src)})"] ++
+              (pairs |> Enum.chunk_every(2) |> Enum.flat_map(fn [key, dst] ->
+                ["(local.set $mn (call $map_get (local.get $tmp) #{val.(key)}))",
+                 "(if (ref.is_null (local.get $mn)) (then #{jump.(fail)}))",
+                 set.(dst, "(struct.get $mnode 1 (ref.as_non_null (local.get $mn)))")]
+              end))
           {lines, false}
         {:put_map_assoc, _f, src, dst, _l, {:list, kvs}} ->
           {[set.(dst, build_map(src, kvs, val))], false}
@@ -338,9 +343,25 @@ defmodule Codegen.Emit do
               ["(struct.set $mctx 1 (local.get $mc) (i32.add (struct.get $mctx 1 (local.get $mc)) (i32.const #{bits})))"]
             {:integer, _live, _flags, size, unit, dst} ->
               nbits = size * unit
+              # > 30 bits can't live in an i31: read as i64 and narrow into the exact tier
+              # (i31/$i64/$big). <= 30 bits keep the original i32 fast path (byte-identical output).
+              read =
+                cond do
+                  nbits <= 30 ->
+                    "(ref.i31 (call $bits_read (local.get $bsrc) (struct.get $mctx 1 (local.get $mc)) (i32.const #{nbits})))"
+                  Process.get(:bignum) ->
+                    "(call $narrow (call $bits_read64 (local.get $bsrc) (struct.get $mctx 1 (local.get $mc)) (i32.const #{nbits})))"
+                  true ->
+                    "(ref.i31 (i32.wrap_i64 (call $bits_read64 (local.get $bsrc) (struct.get $mctx 1 (local.get $mc)) (i32.const #{nbits}))))"
+                end
               ["(local.set $bsrc (struct.get $mctx 0 (local.get $mc)))",
-               set.(dst, "(ref.i31 (call $bits_read (local.get $bsrc) (struct.get $mctx 1 (local.get $mc)) (i32.const #{nbits})))"),
+               set.(dst, read),
                "(struct.set $mctx 1 (local.get $mc) (i32.add (struct.get $mctx 1 (local.get $mc)) (i32.const #{nbits})))"]
+            # f64 extraction (<<f::float>> match): read the 64 bits and reinterpret.
+            {:float, _live, _flags, size, unit, dst} when size * unit == 64 ->
+              ["(local.set $bsrc (struct.get $mctx 0 (local.get $mc)))",
+               set.(dst, "(struct.new $float (f64.reinterpret_i64 (call $bits_read64 (local.get $bsrc) (struct.get $mctx 1 (local.get $mc)) (i32.const 64))))"),
+               "(struct.set $mctx 1 (local.get $mc) (i32.add (struct.get $mctx 1 (local.get $mc)) (i32.const 64)))"]
             {:binary, _live, _flags, size, unit, dst} ->
               nbits = size * unit
               nbytes = div(nbits, 8)
@@ -380,6 +401,17 @@ defmodule Codegen.Emit do
         {:try_case_end, _} -> {["(unreachable)"], true}   # no try-clause matched (error path)
         {:get_tuple_element, s, i, d} -> {[set.(d, "(array.get $tuple (ref.cast (ref $tuple) #{val.(s)}) (i32.const #{i}))")], false}
         # element(N, Tuple) — 1-indexed tuple access (BIF form)
+        # element/2 in GUARD context (real fail label): a non-tuple subject or out-of-range index is a
+        # guard FAILURE (jump to f), never a trap — :lists.keydelete/keytake walk lists whose elements
+        # may not be tuples at all.
+        {:bif, :element, {:f, f}, [{:integer, n}, src], d} when f != 0 ->
+          {["(if (i32.eqz (ref.test (ref $tuple) #{val.(src)})) (then #{jump.(f)}))",
+            "(if (i32.gt_s (i32.const #{n}) (array.len (ref.cast (ref $tuple) #{val.(src)}))) (then #{jump.(f)}))",
+            set.(d, "(array.get $tuple (ref.cast (ref $tuple) #{val.(src)}) (i32.const #{n - 1}))")], false}
+        {:bif, :element, {:f, f}, [idx, src], d} when f != 0 ->
+          {["(if (i32.eqz (ref.test (ref $tuple) #{val.(src)})) (then #{jump.(f)}))",
+            "(if (i32.or (i32.lt_s #{i32v.(idx)} (i32.const 1)) (i32.gt_s #{i32v.(idx)} (array.len (ref.cast (ref $tuple) #{val.(src)})))) (then #{jump.(f)}))",
+            set.(d, "(array.get $tuple (ref.cast (ref $tuple) #{val.(src)}) (i32.sub #{i32v.(idx)} (i32.const 1)))")], false}
         {:bif, :element, _f, [{:integer, n}, src], d} -> {[set.(d, "(array.get $tuple (ref.cast (ref $tuple) #{val.(src)}) (i32.const #{n - 1}))")], false}
         {:bif, :element, _f, [idx, src], d} -> {[set.(d, "(array.get $tuple (ref.cast (ref $tuple) #{val.(src)}) (i32.sub #{i32v.(idx)} (i32.const 1)))")], false}
         {:bif, :tuple_size, _f, [src], d} -> {[set.(d, "(ref.i31 (array.len (ref.cast (ref $tuple) #{val.(src)})))")], false}
@@ -944,17 +976,52 @@ defmodule Codegen.Emit do
   # Each seg = [type, flags, unit, nil, src, size]. Supported: string segs and binary segs
   # (size :all or a fixed integer byte count). Runtime length = sum of segment byte lengths.
   def create_bin_lines(segs, val) do
-    blen_expr = Enum.reduce(segs, "(i32.const 0)", fn seg, acc ->
-      "(i32.add #{acc} #{seg_len(seg, val)})"
-    end)
+    if Enum.any?(segs, &subbyte_seg?/1) do
+      create_bin_bits(segs, val)
+    else
+      blen_expr = Enum.reduce(segs, "(i32.const 0)", fn seg, acc ->
+        "(i32.add #{acc} #{seg_len(seg, val)})"
+      end)
+      setup = [
+        "(local.set $blen #{blen_expr})",
+        "(local.set $bdst (array.new_default $bytes (local.get $blen)))",
+        "(local.set $boff (i32.const 0))"
+      ]
+      blits = Enum.flat_map(segs, &blit_seg(&1, val))
+      {setup ++ blits, "(struct.new $binary (ref.as_non_null (local.get $bdst)))"}
+    end
+  end
+
+  # ── bit-mode construction: any sub-byte integer segment or a float segment switches the whole
+  # build to bit-level writes ($bits_write, MSB-first; $boff tracks BITS). Sizes must be static.
+  defp subbyte_seg?([{:atom, :integer}, _fl, u, _n, _src, {:integer, sz}]), do: rem(sz * u, 8) != 0
+  defp subbyte_seg?([{:atom, :float} | _]), do: true
+  defp subbyte_seg?(_), do: false
+
+  defp create_bin_bits(segs, val) do
+    total_bits = Enum.reduce(segs, 0, fn seg, acc -> acc + seg_bits!(seg) end)
+    nbytes = div(total_bits + 7, 8)
     setup = [
-      "(local.set $blen #{blen_expr})",
-      "(local.set $bdst (array.new_default $bytes (local.get $blen)))",
+      "(local.set $bdst (array.new_default $bytes (i32.const #{nbytes})))",
       "(local.set $boff (i32.const 0))"
     ]
-    blits = Enum.flat_map(segs, &blit_seg(&1, val))
+    blits =
+      Enum.flat_map(segs, fn seg ->
+        bits = seg_bits!(seg)
+        vexpr =
+          case seg do
+            [{:atom, :integer}, _fl, _u, _n, src, _sz] -> "(call $term_i64 #{val.(src)})"
+            [{:atom, :float}, _fl, _u, _n, src, _sz] -> "(i64.reinterpret_f64 (struct.get $float 0 (ref.cast (ref $float) #{val.(src)})))"
+          end
+        ["(call $bits_write (ref.as_non_null (local.get $bdst)) (local.get $boff) (i32.const #{bits}) #{vexpr})",
+         "(local.set $boff (i32.add (local.get $boff) (i32.const #{bits})))"]
+      end)
     {setup ++ blits, "(struct.new $binary (ref.as_non_null (local.get $bdst)))"}
   end
+
+  defp seg_bits!([{:atom, :integer}, _fl, u, _n, _src, {:integer, sz}]), do: sz * u
+  defp seg_bits!([{:atom, :float}, _fl, u, _n, _src, {:integer, sz}]) when sz * u == 64, do: 64
+  defp seg_bits!(seg), do: raise("bit-mode bs_create_bin segment unsupported: #{inspect(seg)}")
 
   def seg_len([{:atom, :string}, _fl, _u, _n, {:string, s}, _sz], _val), do: "(i32.const #{byte_size(s)})"
   # :append / :private_append (building on an existing binary, e.g. <<acc::binary, …>>) behave like

@@ -108,6 +108,10 @@ export const makeStr = (getExports) => {
     // PCRE branch-reset (?|...) -> (?:...). Exact when the FIRST alternative participates (shared
     // numbering); a later alternative shifts capture positions — a documented fidelity edge.
     s = s.replace(/\(\?\|/g, "(?:");
+    // PCRE atomic group (?>...) -> (?:...). Exact when the group's content cannot backtrack
+    // internally (single-token groups like (?>\n) — Earmark's usage); a documented fidelity edge
+    // for backtracking-sensitive patterns.
+    s = s.replace(/\(\?>/g, "(?:");
     return new RegExp(s, flags);
   };
   const jsre = (patB, optsB, extraFlags = "") => pcre2js(rdBin(patB), rdBin(optsB), extraFlags);
@@ -258,6 +262,63 @@ export const makeStr = (getExports) => {
     re_test,
     re_scan,
     re_escape,
+    // :unicode NF* normalization — JS .normalize uses the same Unicode tables
+    nfc: (b) => wrBin(rdBin(b).normalize("NFC")),
+    nfd: (b) => wrBin(rdBin(b).normalize("NFD")),
+    nfkc: (b) => wrBin(rdBin(b).normalize("NFKC")),
+    nfkd: (b) => wrBin(rdBin(b).normalize("NFKD")),
+    // Erlang float_to_binary(F, [:short]): the shortest round-trip DIGITS are unique (Ryu), and JS
+    // produces the same ones — only the formatting convention differs. Empirically-derived Erlang
+    // rule (validated by differential fuzz): plain iff -3 <= dp <= 15 and dp - len(digits) <= 2,
+    // else scientific d.ddd e(dp-1). Plain always keeps >= 1 fractional digit ("100.0").
+    // Erlang float_to_binary. mode 0 = [:short]; 1 = default (20-digit scientific, e+NN);
+    // 2 = {:decimals, dec}; 3 = decimals + :compact (strip trailing zeros, keep >= 1).
+    // For :short: the shortest round-trip DIGITS are unique (Ryu) and JS produces the same ones —
+    // only formatting differs. Empirically-derived Erlang rule (validated by differential fuzz):
+    // plain iff -3 <= dp <= 15 and dp - len(digits) <= 2, else scientific d.ddd e(dp-1).
+    flt_fmt: (f, mode, dec) => {
+      if (mode === 1) {
+        const [m, e] = Math.abs(f).toExponential(20).split("e");
+        const exp = Number(e);
+        const es = (exp < 0 ? "-" : "+") + String(Math.abs(exp)).padStart(2, "0");
+        return wrBin((f < 0 || Object.is(f, -0) ? "-" : "") + m + "e" + es);
+      }
+      if (mode === 2 || mode === 3) {
+        let out = Math.abs(f).toFixed(dec);
+        if (mode === 3 && out.includes(".")) out = out.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ".0");
+        if (mode === 3 && !out.includes(".")) out = out + ".0";
+        return wrBin((f < 0 || Object.is(f, -0) ? "-" : "") + out);
+      }
+      // mode 0: :short
+      if (f === 0) return wrBin(Object.is(f, -0) ? "-0.0" : "0.0");
+      const neg = f < 0 ? "-" : "";
+      const s = String(Math.abs(f));
+      let digits, dp;
+      if (s.includes("e")) {
+        const [m, e] = s.split("e");
+        digits = m.replace(".", "");
+        dp = Number(e) + (m.indexOf(".") === -1 ? m.length : m.indexOf("."));
+      } else {
+        const i = s.indexOf(".");
+        if (i === -1) { dp = s.length; digits = s; }
+        else {
+          const ip = s.slice(0, i), fp = s.slice(i + 1);
+          if (ip === "0") { const z = (fp.match(/^0*/) || [""])[0].length; digits = fp.slice(z); dp = -z; }
+          else { digits = ip + fp; dp = ip.length; }
+        }
+      }
+      digits = digits.replace(/0+$/, "") || "0";
+      const len = digits.length;
+      let out;
+      if (dp >= -3 && dp <= 15 && dp - len <= 2) {
+        if (dp <= 0) out = "0." + "0".repeat(-dp) + digits;
+        else if (dp >= len) out = digits + "0".repeat(dp - len) + ".0";
+        else out = digits.slice(0, dp) + "." + digits.slice(dp);
+      } else {
+        out = digits[0] + "." + (digits.slice(1) || "0") + "e" + (dp - 1);
+      }
+      return wrBin(neg + out);
+    },
   };
 };
 

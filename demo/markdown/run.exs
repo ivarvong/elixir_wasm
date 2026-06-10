@@ -52,10 +52,11 @@ defmodule MdDemo do
     # protocols has real targets to call.
     [Kernel, Exception, Enum, String, String.Break, String.Chars, List, Map, MapSet, Keyword, Integer, Float,
      Tuple, Range, Stream, Enumerable, Collectable, Inspect, Inspect.Algebra, Access,
-     ArgumentError, RuntimeError, KeyError, :lists, :maps, :sets, :ordsets, :gb_sets,
+     ArgumentError, RuntimeError, KeyError, :lists, :maps, :sets, :ordsets, :gb_sets, :erl_scan, :erl_anno, :proplists, :orddict, :string, :io_lib, :io_lib_format, :io_lib_pretty,
      Enumerable.List, Enumerable.Map, Enumerable.Range, Enumerable.MapSet, Enumerable.Function, Enumerable.Stream,
      Collectable.List, Collectable.Map, Collectable.MapSet, Collectable.BitString,
-     String.Chars.Integer, String.Chars.Float, String.Chars.List, String.Chars.BitString, String.Chars.Atom]
+     String.Chars.Integer, String.Chars.Float, String.Chars.List, String.Chars.BitString, String.Chars.Atom,
+     List.Chars.BitString, List.Chars.Integer, List.Chars.List, List.Chars.Atom]
     |> Enum.map(fn m -> Code.ensure_loaded(m); to_string(:code.which(m)) end)
     |> Enum.filter(&String.ends_with?(&1, ".beam"))
   end
@@ -127,12 +128,12 @@ defmodule MdDemo do
   defp bench_js do
     """
     import fs from "node:fs";
-    import { makeBig, makeMath, makeStr, makeProcStubs } from "#{Path.join(@here, "../../runtime/imports.mjs")}";
+    import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "#{Path.join(@here, "../../runtime/imports.mjs")}";
     const big = makeBig(), math = makeMath(); let e; const str = makeStr(() => e);
     const { proc, sched } = makeProcStubs();
     const bytes = fs.readFileSync(process.argv[2]);
     let t = performance.now(); const mod = new WebAssembly.Module(bytes); const tc = performance.now()-t;
-    t = performance.now(); e = new WebAssembly.Instance(mod, { big, math, str, proc, sched }).exports; const ti = performance.now()-t;
+    t = performance.now(); e = new WebAssembly.Instance(mod, { big, math, str, proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) }).exports; const ti = performance.now()-t;
     for (let i=0;i<200;i++) e.render(i);              // warm
     const N = 20000; t = performance.now(); for (let i=0;i<N;i++) e.render(i); const dt = performance.now()-t;
     console.log("    module_compile=" + tc.toFixed(1) + "ms  instantiate=" + ti.toFixed(2) + "ms");

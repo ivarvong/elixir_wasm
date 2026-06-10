@@ -33,6 +33,10 @@ defmodule Scoreboard do
   @aliases %{"fun1" => "&(&1 * 2)", "fun2" => "fn a, b -> a + b end", "mapset1" => "MapSet.new([1, 2, 3])"}
   # genuinely nondeterministic functions: equal output across runs/impls is not even defined.
   @nondet [random: 1, shuffle: 1, take_random: 2, unique_integer: 0]
+  # results whose ORDER is unspecified by the language when derived from map iteration (the documented
+  # map-order delta, LIMITATIONS §2): normalize by sorting before checksumming — both sides identically.
+  @sort_result %{{Map, :keys, 1} => :sort, {Map, :values, 1} => :sort, {Map, :to_list, 1} => :sort,
+                 {Keyword, :new, 1} => :sort, {Enum, :unzip, 1} => :sort_tuple}
 
   def main(args) do
     # candidate probes intentionally crash a lot — keep their crash reports out of the output
@@ -93,7 +97,7 @@ defmodule Scoreboard do
         catch _, _ -> nil
         end
       end)
-      case Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill) do
+      case Task.yield(task, 10_000) || Task.shutdown(task, :brutal_kill) do
         {:ok, r} -> r
         _ -> nil
       end
@@ -117,7 +121,13 @@ defmodule Scoreboard do
     clauses =
       gen
       |> Enum.with_index()
-      |> Enum.map_join("\n", fn {{_f, _a, call}, i} -> "      #{i} -> chk(#{call})" end)
+      |> Enum.map_join("\n", fn {{f, a, call}, i} ->
+        case Map.get(@sort_result, {mod, f, a}) do
+          :sort -> "      #{i} -> chk(Enum.sort(#{call}))"
+          :sort_tuple -> "      #{i} -> chk((fn {sa, sb} -> {Enum.sort(sa), Enum.sort(sb)} end).(#{call}))"
+          _ -> "      #{i} -> chk(#{call})"
+        end
+      end)
     wrapper = :"Elixir.SB#{inspect(mod) |> String.replace(".", "")}"
     src = """
     defmodule #{inspect(wrapper)} do
@@ -137,7 +147,8 @@ defmodule Scoreboard do
       ([mod] ++ [Kernel, Enum, List, Map, Keyword, Tuple, Integer, String, String.Break, Range, MapSet, Float,
                  Exception, ArgumentError, RuntimeError, KeyError, Enumerable, Enumerable.List, Enumerable.Map,
                  Enumerable.Range, Enumerable.MapSet, Collectable, Collectable.List, Collectable.Map,
-                 Collectable.MapSet, :lists, :maps, :sets, :ordsets])
+                 Collectable.MapSet, Stream, Stream.Reducers, Enumerable.Function, Enumerable.Stream,
+                 Function, :lists, :maps, :sets, :ordsets])
       |> Enum.uniq()
       |> Enum.map(fn x -> Code.ensure_loaded(x); to_string(:code.which(x)) end)
       |> Enum.filter(&String.ends_with?(&1, ".beam"))

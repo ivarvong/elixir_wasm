@@ -480,6 +480,10 @@ defmodule Codegen.Runtime do
         """
           (func $unicode.characters_to_list_1 (param $x (ref null eq)) (result (ref null eq))
             (local $b (ref $bytes)) (local $n i32) (local $i i32) (local $c i32) (local $cp i32) (local $out (ref null eq))
+            ;; chardata that is ALREADY a flat codepoint list (or []) passes through unchanged —
+            ;; List.to_charlist(charlist) etc. (nested/mixed chardata still goes the binary path only).
+            (if (ref.is_null (local.get $x)) (then (return (local.get $x))))
+            (if (ref.test (ref $cons) (local.get $x)) (then (return (local.get $x))))
             (local.set $b (call $bin_bytes (local.get $x)))
             (local.set $n (array.len (local.get $b)))
             (block $done (loop $lp
@@ -911,6 +915,102 @@ defmodule Codegen.Runtime do
               (global.get $atom_ok))\
           """,
           else: "  (func $Elixir_46_IO.warn_1 (param $x (ref null eq)) (result (ref null eq)) (unreachable))"),
+      # ── bit-level (sub-byte) bitstring primitives ──────────────────────────────────────────
+      # 64-bit MSB-first bit read (the i32 $bits_read truncates past 32 bits — 52-bit float
+      # mantissas need this). Per-bit loop: simple and correct; these paths aren't hot.
+      "$bits_read64" =>
+        """
+          (func $bits_read64 (param $b (ref null $bytes)) (param $pos i32) (param $n i32) (result i64)
+            (local $i i32) (local $acc i64) (local $bp i32)
+            (block $d (loop $l
+              (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
+              (local.set $bp (i32.add (local.get $pos) (local.get $i)))
+              (local.set $acc (i64.or (i64.shl (local.get $acc) (i64.const 1))
+                (i64.extend_i32_u (i32.and (i32.shr_u (array.get_u $bytes (local.get $b) (i32.div_u (local.get $bp) (i32.const 8)))
+                                                       (i32.sub (i32.const 7) (i32.rem_u (local.get $bp) (i32.const 8))))
+                                            (i32.const 1)))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $l)))
+            (local.get $acc))\
+        """,
+      # MSB-first bit write of the low `n` bits of $v at bit position $pos.
+      "$bits_write" =>
+        """
+          (func $bits_write (param $d (ref $bytes)) (param $pos i32) (param $n i32) (param $v i64)
+            (local $i i32) (local $bp i32) (local $byte i32)
+            (block $dn (loop $l
+              (br_if $dn (i32.ge_u (local.get $i) (local.get $n)))
+              (if (i32.and (i32.wrap_i64 (i64.shr_u (local.get $v) (i64.extend_i32_u (i32.sub (i32.sub (local.get $n) (i32.const 1)) (local.get $i))))) (i32.const 1))
+                (then
+                  (local.set $bp (i32.add (local.get $pos) (local.get $i)))
+                  (local.set $byte (i32.div_u (local.get $bp) (i32.const 8)))
+                  (array.set $bytes (local.get $d) (local.get $byte)
+                    (i32.or (array.get_u $bytes (local.get $d) (local.get $byte))
+                            (i32.shl (i32.const 1) (i32.sub (i32.const 7) (i32.rem_u (local.get $bp) (i32.const 8))))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $l)))
+          )\
+        """,
+      # integer term -> i64 across the tiers (i31 / $i64 / host $big), for bit-segment values.
+      "$term_i64" => term_i64_wat(Process.get(:bignum)),
+      # :unicode NF* normalization — host (JS .normalize, same Unicode tables). Gated bodies.
+      "$unicode.characters_to_nfc_binary_1" => uninorm_wat("nfc"),
+      "$unicode.characters_to_nfd_binary_1" => uninorm_wat("nfd"),
+      "$unicode.characters_to_nfkc_binary_1" => uninorm_wat("nfkc"),
+      "$unicode.characters_to_nfkd_binary_1" => uninorm_wat("nfkd"),
+      # epp:default_encoding/0 — a constant (:utf8); io_lib consults it for encoding decisions.
+      "$epp.default_encoding_0" =>
+        """
+          (func $epp.default_encoding_0 (result (ref null eq))
+            (global.get $atom_utf8))\
+        """,
+      # io:printable_range/0 — :latin1 unless the emulator runs +pc unicode (we match the default).
+      "$io.printable_range_0" =>
+        """
+          (func $io.printable_range_0 (result (ref null eq))
+            (global.get $atom_latin1))\
+        """,
+      # iolist_size/1 — byte size of any iodata (via the existing flattener).
+      "$erlang.iolist_size_1" =>
+        """
+          (func $erlang.iolist_size_1 (param $l (ref null eq)) (result (ref null eq))
+            (ref.i31 (array.len (struct.get $binary 0 (ref.cast (ref $binary) (call $erlang.iolist_to_binary_1 (local.get $l)))))))\
+        """,
+      # maps:take/2 — {Value, MapWithoutKey} | :error (what Map.pop/pop! route through).
+      "$maps.take_2" =>
+        """
+          (func $maps.take_2 (param $k (ref null eq)) (param $m (ref null eq)) (result (ref null eq))
+            (if (i32.eqz (call $map_has (local.get $m) (local.get $k))) (then (return (global.get $atom_error))))
+            (array.new_fixed $tuple 2
+              (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $m) (local.get $k))))
+              (call $maps.remove_2 (local.get $k) (local.get $m))))\
+        """,
+      # erts_internal:mc_iterator/1 — OTP-27 map cursor ({K, V, Next} chain ending :none; :none for
+      # an empty map). We build the WHOLE chain eagerly from the sorted kv array, so mc_refill (the
+      # lazy continuation for big maps) is never reached. Iteration order is key-sorted — the
+      # documented map-order delta (LIMITATIONS §2).
+      "$erts_internal.mc_iterator_1" =>
+        """
+          (func $erts_internal.mc_iterator_1 (param $m (ref null eq)) (result (ref null eq))
+            (local $a (ref $tuple)) (local $i i32) (local $acc (ref null eq))
+            (local.set $a (call $map_kv (local.get $m)))
+            (local.set $i (array.len (local.get $a)))
+            (local.set $acc (global.get $atom_none))
+            (block $d (loop $l
+              (br_if $d (i32.eqz (local.get $i)))
+              (local.set $acc (array.new_fixed $tuple 3
+                (array.get $tuple (local.get $a) (i32.sub (local.get $i) (i32.const 2)))
+                (array.get $tuple (local.get $a) (i32.sub (local.get $i) (i32.const 1)))
+                (local.get $acc)))
+              (local.set $i (i32.sub (local.get $i) (i32.const 2)))
+              (br $l)))
+            (local.get $acc))\
+        """,
+      "$erts_internal.mc_refill_1" =>
+        """
+          (func $erts_internal.mc_refill_1 (param $c (ref null eq)) (result (ref null eq))
+            (unreachable))\
+        """,
       # maps:update/3 — replace an EXISTING key's value; {:badkey, K} error if absent (what
       # Kernel.struct!/2 relies on to validate field names).
       "$maps.update_3" =>
@@ -1693,6 +1793,35 @@ defmodule Codegen.Runtime do
             (br_if $f (i32.eqz (local.get $n))) (br $fl)))
           (struct.new $binary (local.get $d)))\
       """
+    end
+  end
+
+  defp term_i64_wat(bignum?) do
+    if bignum? do
+      """
+        (func $term_i64 (param $x (ref null eq)) (result i64)
+          (if (ref.test (ref i31) (local.get $x)) (then (return (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $x)))))))
+          (if (ref.test (ref $i64) (local.get $x)) (then (return (struct.get $i64 0 (ref.cast (ref $i64) (local.get $x))))))
+          (call $bigint_to_i64 (struct.get $big 0 (ref.cast (ref $big) (local.get $x)))))\
+      """
+    else
+      """
+        (func $term_i64 (param $x (ref null eq)) (result i64)
+          (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $x)))))\
+      """
+    end
+  end
+
+  # :unicode.characters_to_<form>_binary/1 — host normalize when detected, honest trap otherwise.
+  defp uninorm_wat(form) do
+    name = "$unicode.characters_to_#{form}_binary_1"
+    if Process.get(:uninorm) do
+      """
+        (func #{name} (param $s (ref null eq)) (result (ref null eq))
+          (return_call $host_#{form} (local.get $s)))\
+      """
+    else
+      "  (func #{name} (param $s (ref null eq)) (result (ref null eq)) (unreachable))"
     end
   end
 
