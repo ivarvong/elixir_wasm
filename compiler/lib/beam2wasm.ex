@@ -172,7 +172,7 @@ defmodule Beam2Wasm do
         match?({_, _, {:extfunc, :crypto, :hash, 2}}, op) or match?({_, _, {:extfunc, :crypto, :hash, 2}, _}, op)
       end)
     end)
-    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :trim_all, :parts, :include_captures, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :badarith, :__struct__, Regex,
+    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :trim_all, :parts, :include_captures, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :badarith, :native, :second, :millisecond, :microsecond, :nanosecond, :__struct__, Regex,
               :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio, :badarg, :short, :decimals, :compact, :undef, :utf8, :latin1] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
@@ -276,6 +276,14 @@ defmodule Beam2Wasm do
           match?({_, _, {:extfunc, :erlang, f, _}, _} when f in [:float_to_binary, :float_to_list], op)
       end)
     end)
+    # text -> float: both engines do correctly-rounded decimal->double (strtod / Number),
+    # so a host parse is exact. Gated like flt_fmt.
+    fltparse? = flt and Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, :erlang, f, 1}} when f in [:binary_to_float, :list_to_float], op) or
+          match?({_, _, {:extfunc, :erlang, f, 1}, _} when f in [:binary_to_float, :list_to_float], op)
+      end)
+    end)
     regex_run? = regex_run3? or regex_more? or Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Regex, :run, 2}}, op) or match?({_, _, {:extfunc, Regex, :run, 2}, _}, op)
@@ -291,11 +299,34 @@ defmodule Beam2Wasm do
         end)
       end)
     atomname_global =
-      if atom_names? do
-        names = Enum.map_join(atoms, " ", fn a -> bin_literal(Atom.to_string(a)) end)
-        "  (global $atomnames (ref $tuple) (array.new_fixed $tuple #{length(atoms)} #{names}))"
-      else
-        ""
+      cond do
+        not atom_names? ->
+          ""
+
+        # V8 caps array.new_fixed at 10,000 elements; big atom tables (pyex interns ~13k)
+        # build the array imperatively in the module's start function instead.
+        length(atoms) > 9_999 ->
+          sets =
+            atoms
+            |> Enum.with_index()
+            |> Enum.map_join("\n", fn {a, i} ->
+              "    (array.set $tuple (ref.cast (ref $tuple) (global.get $atomnames_m)) (i32.const #{i}) #{bin_literal(Atom.to_string(a))})"
+            end)
+          """
+            (global $atomnames_m (mut (ref null eq)) (ref.null none))
+            (func $init_atomnames
+              (global.set $atomnames_m (array.new_default $tuple (i32.const #{length(atoms)})))
+          #{sets})
+            (start $init_atomnames)
+            (func $atomnames_get (result (ref $tuple)) (ref.cast (ref $tuple) (global.get $atomnames_m)))
+          """
+
+        true ->
+          names = Enum.map_join(atoms, " ", fn a -> bin_literal(Atom.to_string(a)) end)
+          """
+            (global $atomnames (ref $tuple) (array.new_fixed $tuple #{length(atoms)} #{names}))
+            (func $atomnames_get (result (ref $tuple)) (global.get $atomnames))
+          """
       end
     funcs = Enum.map_join(user, "\n", fn {mod, f} -> safe_compile_fun(mod, f) end)
     # completeness meter: reachable stubs (function-level OR opcode-level). 0 ⇒ provably supported.
@@ -332,6 +363,7 @@ defmodule Beam2Wasm do
          else: []) ++
       (if fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
       (if sql?, do: [{:sql_host, :exec, 2}], else: []) ++
+      (if fltparse?, do: [{:erlang, :binary_to_float, 1}, {:erlang, :list_to_float, 1}], else: []) ++
       (if fltfmt?,
          do: [{:erlang, :float_to_binary, 1}, {:erlang, :float_to_binary, 2},
               {:erlang, :float_to_list, 1}, {:erlang, :float_to_list, 2}],
@@ -402,6 +434,7 @@ defmodule Beam2Wasm do
       if(io?, do: "  (import \"io\" \"puts\" (func $host_io_puts (param (ref null eq)) (result i32)))\n  (import \"io\" \"warn\" (func $host_io_warn (param (ref null eq)) (result i32)))", else: ""),
       if(uninorm?, do: Enum.map_join(~w(nfc nfd nfkc nfkd), "\n", fn f -> "  (import \"str\" \"#{f}\" (func $host_#{f} (param (ref null eq)) (result (ref null eq))))" end), else: ""),
       if(fltfmt?, do: "  (import \"str\" \"flt_fmt\" (func $host_flt_fmt (param f64) (param i32) (param i32) (result (ref null eq))))", else: ""),
+      if(fltparse?, do: "  (import \"str\" \"bin_to_float\" (func $host_bin_to_float (param (ref null eq)) (result f64)))", else: ""),
       if(titlecase?, do: "  (import \"str\" \"titlecase\" (func $host_str_titlecase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"upchar\" (func $host_str_upchar (param i32) (result i32)))", else: ""),
       if(http_get? or req_in_user, do: "  (import \"http\" \"get\" (func $host_http_get (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(crypto_hash?, do: "  (import \"crypto\" \"hash\" (func $host_crypto_hash (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
@@ -410,21 +443,22 @@ defmodule Beam2Wasm do
       if(exc, do: "  (tag $exc (export \"exc\") (param (ref null eq)) (param (ref null eq)) (param (ref null eq)))", else: ""),
       if(reds, do: "  (global $reds (mut i32) (i32.const #{reds}))", else: ""),
       "  (global $refctr (mut i32) (i32.const 0))",   # make_ref source: a monotonic counter (after imports)
+      "  (global $ptermtab (mut (ref null eq)) (ref.null none))",  # :persistent_term storage (assoc list)
       "  (global $monotime (mut i32) (i32.const 0))",  # erlang:monotonic_time source (monotonic, distinct)
       atom_globals,
       atomname_global,
       const_globals(),   # hoisted constant maps/etc., built once as constant-expr globals
       if(atom_names?, do: """
         (func $erlang.atom_to_binary_1 (param $x (ref null eq)) (result (ref null eq))
-          (array.get $tuple (global.get $atomnames) (struct.get $atom 0 (ref.cast (ref $atom) (local.get $x)))))
+          (array.get $tuple (call $atomnames_get) (struct.get $atom 0 (ref.cast (ref $atom) (local.get $x)))))
         (func $erlang.atom_to_binary_2 (param $x (ref null eq)) (param $enc (ref null eq)) (result (ref null eq))
           (return_call $erlang.atom_to_binary_1 (local.get $x)))
         (func $erlang.binary_to_existing_atom_1 (param $b (ref null eq)) (result (ref null eq))
           (local $i i32) (local $n i32)
-          (local.set $n (array.len (global.get $atomnames)))
+          (local.set $n (array.len (call $atomnames_get)))
           (block $d (loop $l
             (br_if $d (i32.ge_u (local.get $i) (local.get $n)))
-            (if (i32.eqz (call $term_compare (array.get $tuple (global.get $atomnames) (local.get $i)) (local.get $b)))
+            (if (i32.eqz (call $term_compare (array.get $tuple (call $atomnames_get) (local.get $i)) (local.get $b)))
               (then (return (struct.new $atom (local.get $i)))))
             (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
           (drop (call $erlang.error_1 (global.get $atom_badarg)))
@@ -516,6 +550,12 @@ defmodule Beam2Wasm do
       # Shared accessors for the %Regex{} struct: the host shims need BOTH :source and :opts (PCRE
       # modifiers like x/i/m/s — translated host-side to JS RegExp flags/rewrites). :opts may be
       # absent on runtime-built regexes -> empty binary.
+      if(fltparse?, do: """
+        (func $erlang.binary_to_float_1 (param $b (ref null eq)) (result (ref null eq))
+          (struct.new $float (call $host_bin_to_float (local.get $b))))
+        (func $erlang.list_to_float_1 (param $l (ref null eq)) (result (ref null eq))
+          (struct.new $float (call $host_bin_to_float (call $erlang.iolist_to_binary_1 (local.get $l)))))
+      """, else: ""),
       if(regex_split? or regex_run? or regex_replace3? or regex_more?, do: """
         (func $regex_src (param $re (ref null eq)) (result (ref null eq))
           (struct.get $mnode 1 (ref.as_non_null (call $map_get (local.get $re) (global.get $atom_source)))))
@@ -773,6 +813,7 @@ defmodule Beam2Wasm do
       if(bignum and Process.get(:float), do: Codegen.Runtime.f64_to_int_helper(), else: ""),
       if(flt, do: float_helpers(user), else: ""),
       exports(mods),
+      dataseg_section(),   # data segments registered by big bin_literal/4 during emission
       ")"
     ] |> Enum.join("\n")
   end

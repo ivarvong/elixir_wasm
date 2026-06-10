@@ -1177,7 +1177,11 @@ defmodule Codegen.Emit do
   def materialize([]), do: "(ref.null none)"            # the empty list
   # constant binaries (string keys/values like "qty", SKU codes) are hoisted too — otherwise each use
   # re-allocates a $binary + $bytes. Immutable globals, built once. (Binaries are never mutated.)
-  def materialize(b) when is_binary(b) and byte_size(b) > 0, do: hoist_const({:bin, b}, fn -> bin_literal(b) end)
+  def materialize(b) when is_binary(b) and byte_size(b) > 0 and byte_size(b) <= 9_999,
+    do: hoist_const({:bin, b}, fn -> bin_literal(b) end)
+  # >9999 bytes: array.new_fixed is V8-capped and array.new_data is not a constant expression —
+  # build inline at the use site from a data segment (never hoisted to a global).
+  def materialize(b) when is_binary(b) and byte_size(b) > 9_999, do: bin_literal(b)
   def materialize(b) when is_binary(b), do: bin_literal(b)
   # sub-byte bitstring literal (<<5::3>>): bytes MSB-padded + explicit bit length
   def materialize(b) when is_bitstring(b) do
@@ -1227,6 +1231,7 @@ defmodule Codegen.Emit do
 
   def const_exprable?(n) when is_integer(n),
     do: not Process.get(:bignum) or (n >= -9_223_372_036_854_775_808 and n <= 9_223_372_036_854_775_807)
+  def const_exprable?(b) when is_binary(b), do: byte_size(b) <= 9_999
   # NB: Map.to_list, not Enum — struct literals (%Earmark.Options{}) have no Enumerable impl
   def const_exprable?(m) when is_map(m), do: m |> Map.to_list() |> Enum.all?(fn {k, v} -> const_exprable?(k) and const_exprable?(v) end)
   def const_exprable?([h | t]), do: const_exprable?(h) and const_exprable?(t)

@@ -959,6 +959,115 @@ defmodule Codegen.Runtime do
           (func $file.write_file_3 (param $p (ref null eq)) (param $d (ref null eq)) (param $modes (ref null eq)) (result (ref null eq))
             (return_call $file.write_file_2 (local.get $p) (local.get $d)))\
         """,
+      # ── time: a deterministic monotonic counter (the $monotime global, "native" = nanoseconds,
+      # +1µs per read). Pure programs see consistent budgets; real host time is a later upgrade.
+      "$time_unit_hz" =>
+        """
+          (func $time_unit_hz (param $u (ref null eq)) (result i64)
+            (if (ref.test (ref i31) (local.get $u)) (then (return (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $u)))))))
+            (if (ref.eq (local.get $u) (global.get $atom_second)) (then (return (i64.const 1))))
+            (if (ref.eq (local.get $u) (global.get $atom_millisecond)) (then (return (i64.const 1000))))
+            (if (ref.eq (local.get $u) (global.get $atom_microsecond)) (then (return (i64.const 1000000))))
+            (if (ref.eq (local.get $u) (global.get $atom_nanosecond)) (then (return (i64.const 1000000000))))
+            (if (ref.eq (local.get $u) (global.get $atom_native)) (then (return (i64.const 1000000000))))
+            (unreachable))\
+        """,
+      "$Elixir_46_System.convert_time_unit_3" =>
+        """
+          (func $Elixir_46_System.convert_time_unit_3 (param $v (ref null eq)) (param $f (ref null eq)) (param $t (ref null eq)) (result (ref null eq))
+            (call $int_div (call $int_mul (local.get $v) (call $narrow (call $time_unit_hz (local.get $t))))
+                           (call $narrow (call $time_unit_hz (local.get $f)))))\
+        """,
+      "$erlang.convert_time_unit_3" =>
+        """
+          (func $erlang.convert_time_unit_3 (param $v (ref null eq)) (param $f (ref null eq)) (param $t (ref null eq)) (result (ref null eq))
+            (return_call $Elixir_46_System.convert_time_unit_3 (local.get $v) (local.get $f) (local.get $t)))\
+        """,
+      "$Elixir_46_System.monotonic_time_0" =>
+        """
+          (func $Elixir_46_System.monotonic_time_0 (result (ref null eq))
+            (global.set $monotime (i32.add (global.get $monotime) (i32.const 1000)))
+            (call $narrow (i64.extend_i32_s (global.get $monotime))))\
+        """,
+      "$Elixir_46_System.monotonic_time_1" =>
+        """
+          (func $Elixir_46_System.monotonic_time_1 (param $u (ref null eq)) (result (ref null eq))
+            (return_call $Elixir_46_System.convert_time_unit_3 (call $Elixir_46_System.monotonic_time_0) (global.get $atom_native) (local.get $u)))\
+        """,
+      # erlang.--/2: list difference — remove the FIRST occurrence of each rhs element from lhs.
+      "$erlang._45__45__2" =>
+        """
+          (func $erlang._45__45__2 (param $l (ref null eq)) (param $r (ref null eq)) (result (ref null eq))
+            (block $done (loop $lp
+              (br_if $done (i32.eqz (ref.test (ref $cons) (local.get $r))))
+              (local.set $l (call $list_remove_first (local.get $l) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $r)))))
+              (local.set $r (struct.get $cons 1 (ref.cast (ref $cons) (local.get $r))))
+              (br $lp)))
+            (local.get $l))\
+        """,
+      "$list_remove_first" =>
+        """
+          (func $list_remove_first (param $l (ref null eq)) (param $x (ref null eq)) (result (ref null eq))
+            (local $acc (ref null eq)) (local $h (ref null eq)) (local $out (ref null eq))
+            (block $found (block $miss (loop $lp
+              (br_if $miss (i32.eqz (ref.test (ref $cons) (local.get $l))))
+              (local.set $h (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+              (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+              (br_if $found #{term_eq("(local.get $h)", "(local.get $x)")})
+              (local.set $acc (struct.new $cons (local.get $h) (local.get $acc)))
+              (br $lp))))
+            ;; $miss falls through with every element in $acc; $found skips the matched head.
+            ;; reverse $acc onto $l
+            (local.set $out (local.get $l))
+            (block $d2 (loop $l2
+              (br_if $d2 (i32.eqz (ref.test (ref $cons) (local.get $acc))))
+              (local.set $out (struct.new $cons (struct.get $cons 0 (ref.cast (ref $cons) (local.get $acc))) (local.get $out)))
+              (local.set $acc (struct.get $cons 1 (ref.cast (ref $cons) (local.get $acc))))
+              (br $l2)))
+            (local.get $out))\
+        """,
+      # binary <-> byte-list conversions
+      "$erlang.binary_to_list_1" =>
+        """
+          (func $erlang.binary_to_list_1 (param $b (ref null eq)) (result (ref null eq))
+            (local $fb (ref $bytes)) (local $i i32) (local $out (ref null eq))
+            (local.set $fb (call $bin_bytes (local.get $b)))
+            (local.set $i (array.len (local.get $fb)))
+            (block $done (loop $lp
+              (br_if $done (i32.eqz (local.get $i)))
+              (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+              (local.set $out (struct.new $cons (ref.i31 (array.get_u $bytes (local.get $fb) (local.get $i))) (local.get $out)))
+              (br $lp)))
+            (local.get $out))\
+        """,
+      "$erlang.list_to_binary_1" =>
+        """
+          (func $erlang.list_to_binary_1 (param $l (ref null eq)) (result (ref null eq))
+            (return_call $erlang.iolist_to_binary_1 (local.get $l)))\
+        """,
+      # :persistent_term as a single mutable global holding an assoc list (term-keyed). Real
+      # storage semantics: put stores, get/2 returns the stored value or the default. Used by
+      # pure caches (pyex builtins env); storing is what keeps cache-warm hot paths fast.
+      "$persistent_term.put_2" =>
+        """
+          (func $persistent_term.put_2 (param $k (ref null eq)) (param $v (ref null eq)) (result (ref null eq))
+            (global.set $ptermtab (struct.new $cons (array.new_fixed $tuple 2 (local.get $k) (local.get $v)) (global.get $ptermtab)))
+            (global.get $atom_ok))\
+        """,
+      "$persistent_term.get_2" =>
+        """
+          (func $persistent_term.get_2 (param $k (ref null eq)) (param $d (ref null eq)) (result (ref null eq))
+            (local $l (ref null eq)) (local $h (ref $tuple))
+            (local.set $l (global.get $ptermtab))
+            (block $done (loop $lp
+              (br_if $done (i32.eqz (ref.test (ref $cons) (local.get $l))))
+              (local.set $h (ref.cast (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l)))))
+              (if #{term_eq("(array.get $tuple (local.get $h) (i32.const 0))", "(local.get $k)")}
+                (then (return (array.get $tuple (local.get $h) (i32.const 1)))))
+              (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+              (br $lp)))
+            (local.get $d))\
+        """,
       # :sql_host.exec(sql_binary, params_json_binary) -> rows_json_binary. A SQL database as a
       # host effect, exactly like :file — the backing decides: node:sqlite locally, the Durable
       # Object's synchronous ctx.storage.sql in production. A SQL error throws host-side -> an
@@ -1819,7 +1928,9 @@ defmodule Codegen.Runtime do
         (if (i32.eqz (local.get $n)) (then (unreachable)))
         (local.set $basei (i31.get_s (ref.cast (ref i31) (local.get $base))))
         (if (i32.eq (array.get_u $bytes (local.get $b) (i32.const 0)) (i32.const 45))
-          (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1))))
+          (then (local.set $neg (i32.const 1)) (local.set $i (i32.const 1)))
+          (else (if (i32.eq (array.get_u $bytes (local.get $b) (i32.const 0)) (i32.const 43))
+            (then (local.set $i (i32.const 1))))))   ;; leading '+' is legal (list_to_integer('+2'))
         (if (i32.ge_u (local.get $i) (local.get $n)) (then (unreachable)))
         #{acc_init}
         (block $done (loop $lp

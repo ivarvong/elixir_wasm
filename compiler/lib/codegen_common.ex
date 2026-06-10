@@ -46,11 +46,36 @@ defmodule Codegen.Common do
 
   # minimal JSON array-of-strings encoder (no deps) for the @atoms table comment
 
-  # a constant binary -> a $binary built byte-by-byte from an array.new_fixed
+  # a constant binary -> a $binary. Small ones build byte-by-byte from array.new_fixed (legal
+  # in constant expressions, so hoisted globals work); V8 caps array.new_fixed at 10,000
+  # elements, so big literals (long docstrings, embedded tables) go through a DATA SEGMENT +
+  # array.new_data — function-body context only (the materialize size gate keeps them out of
+  # global initializers, where array.new_data is not a constant expression).
+  def bin_literal(b) when byte_size(b) > 9_999 do
+    segs = Process.get(:datasegs, [])
+    idx = length(segs)
+    Process.put(:datasegs, [{idx, b} | segs])
+    "(struct.new $binary (array.new_data $bytes $dataseg#{idx} (i32.const 0) (i32.const #{byte_size(b)})))"
+  end
+
   def bin_literal(b) do
     bytes = :binary.bin_to_list(b)
     inner = if bytes == [], do: "", else: " " <> Enum.map_join(bytes, " ", &"(i32.const #{&1})")
     "(struct.new $binary (array.new_fixed $bytes #{length(bytes)}#{inner}))"
+  end
+
+  # WAT data-segment string syntax: printable ASCII raw (minus quote/backslash), all else \XX hex
+  def dataseg_string(b) do
+    :binary.bin_to_list(b)
+    |> Enum.map_join(fn c ->
+      if c >= 0x20 and c < 0x7F and c != ?" and c != ?\\, do: <<c>>, else: "\\" <> Base.encode16(<<c>>, case: :lower)
+    end)
+  end
+
+  def dataseg_section do
+    Process.get(:datasegs, [])
+    |> Enum.reverse()
+    |> Enum.map_join("\n", fn {idx, b} -> "  (data $dataseg#{idx} \"#{dataseg_string(b)}\")" end)
   end
 
 

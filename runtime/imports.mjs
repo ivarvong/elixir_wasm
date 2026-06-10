@@ -321,8 +321,17 @@ export const makeStr = (getExports) => {
   // each prefixed with a backslash (the whitespace char itself is kept, prefixed).
   const re_escape = (b) => wrBin(rdBin(b).replace(/[.^$*+?()[\]{}|#\\\s-]/g, (c) => "\\" + c));
 
+  // erlang.binary_to_float/1: both engines are correctly-rounded decimal->double, so Number()
+  // is exact. The BEAM rejects non-float syntax with badarg; mirror with an honest throw.
+  const bin_to_float = (b) => {
+    const s = rdBin(b);
+    if (!/^[+-]?\d+\.\d+([eE][+-]?\d+)?$/.test(s)) throw new Error("badarg: binary_to_float " + JSON.stringify(s.slice(0, 30)));
+    return Number(s);
+  };
+
   return {
     upcase: (b) => wrBin(rdBin(b).toUpperCase()),
+    bin_to_float,
     downcase: (b) => wrBin(rdBin(b).toLowerCase()),
     titlecase: (b) => {
       const s = rdBin(b);
