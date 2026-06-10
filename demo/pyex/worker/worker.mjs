@@ -40,13 +40,27 @@ export default {
         .join("\n");
       const body = await req.text();
       const source = prelude ? prelude + "\n" + body : body;
-      if (source.length > 65536) return new Response("source too large (64KB max)", { status: 413 });
+      // the 64KB cap guards the LEXER (per-char recursion depth); /json data rides a separate
+      // channel decoded by compiled Jason and is capped at 1MB instead.
+      const isJson = url.pathname === "/json" && (req.headers.get("content-type") || "").includes("application/json");
+      if (!isJson && source.length > 65536) return new Response("source too large (64KB max)", { status: 413 });
+      if (isJson && source.length > 1048576) return new Response("payload too large (1MB max)", { status: 413 });
       try {
         const t0 = Date.now();
         if (url.pathname === "/json") {
-          // terms across the boundary: eval_value returns {:ok, value, stdout} | {:error, kind, msg}
+          // terms across the boundary: the export returns {:ok, value, stdout} | {:error, kind, msg}
           // as a LIVE WasmGC term; termToJs walks the graph and JSON is just the last-inch render.
-          const walked = termToJs(e, e.eval_value(toBin(source)));
+          // Body may be {"code": ..., "data": ...}: data rides a SEPARATE channel, decoded by
+          // compiled Jason and injected as params.data — payloads never pass through the lexer
+          // (whose per-char recursion depth is the platform stack bound; LIMITATIONS §1.4).
+          let walked;
+          if (isJson) {
+            const { code, data } = JSON.parse(source);
+            if (String(code).length > 65536) return new Response("code too large (64KB max)", { status: 413 });
+            walked = termToJs(e, e.eval_data(toBin(String(code)), toBin(JSON.stringify(data ?? null))));
+          } else {
+            walked = termToJs(e, e.eval_value(toBin(source)));
+          }
           const body = walked[0] === ":ok"
             ? { ok: true, result: walked[1], stdout: walked[2] }
             : { ok: false, error: { kind: walked[1], message: walked[2] } };

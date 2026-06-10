@@ -41,4 +41,25 @@ defmodule PyexWasm do
   defp normalize_key(k) when is_binary(k), do: k
   defp normalize_key(k) when is_integer(k) or is_float(k) or is_boolean(k), do: k
   defp normalize_key(k), do: Pyex.Builtins.py_repr_quoted(k)
+
+  @doc """
+  Code + DATA as separate channels: data arrives as JSON, is decoded by compiled Jason
+  (tail-recursive — no lexer involvement, no stack growth proportional to payload), and is
+  injected as `params.data`. This is the agent-tool-call shape: the model sends a short
+  program; the payload never passes through the Python lexer.
+  """
+  def eval_data(source, data_json) when is_binary(source) and is_binary(data_json) do
+    case Jason.decode(data_json) do
+      {:ok, data} ->
+        case Pyex.run(source, modules: %{"params" => %{"data" => data}}) do
+          {:ok, result, ctx} -> {:ok, normalize(result), Pyex.output(ctx)}
+          {:error, %Pyex.Error{kind: kind, message: msg}} -> {:error, kind, msg}
+        end
+
+      {:error, _} ->
+        {:error, :badata, "params data is not valid JSON"}
+    end
+  rescue
+    e -> {:error, :crash, Atom.to_string(e.__struct__)}
+  end
 end
