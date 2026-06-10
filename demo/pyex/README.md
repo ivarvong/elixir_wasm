@@ -1,5 +1,16 @@
 # Python on WasmGC — the pyex interpreter, compiled
 
+**LIVE: https://elixir-python.ivar.workers.dev** — POST Python source, get the transcript
+back (or open it in a browser for the playground). Stateless: each request evaluates in a
+fresh interpreter context; a `NameError`/`SyntaxError` comes back as a classified
+`error(kind)` transcript, and an unwired capability or runaway program is an honest 500.
+
+```bash
+curl -s -X POST https://elixir-python.ivar.workers.dev --data-binary 'print(2**100)'
+# ok
+# 1267650600228229401496703205376
+```
+
 [pyex](https://github.com/ivarvong/pyex) is a Python 3 interpreter written in pure Elixir.
 This demo compiles it with `mix wasm.build` and runs **real Python on WasmGC**:
 

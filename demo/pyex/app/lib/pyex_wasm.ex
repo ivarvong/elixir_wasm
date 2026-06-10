@@ -6,8 +6,8 @@ defmodule PyexWasm do
       {:ok, result, ctx} ->
         out = Pyex.output(ctx)
         "ok\n" <> out <> "\n=> " <> Pyex.Builtins.py_repr_quoted(result)
-      {:error, err} ->
-        "error\n" <> Exception.message(err)
+      {:error, %Pyex.Error{kind: kind, message: msg}} ->
+        "error(" <> Atom.to_string(kind) <> ")\n" <> msg
     end
   rescue
     e -> "raise\n" <> Exception.message(e)
