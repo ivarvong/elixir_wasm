@@ -959,6 +959,19 @@ defmodule Codegen.Runtime do
           (func $file.write_file_3 (param $p (ref null eq)) (param $d (ref null eq)) (param $modes (ref null eq)) (result (ref null eq))
             (return_call $file.write_file_2 (local.get $p) (local.get $d)))\
         """,
+      # numeric abs across ALL tiers (floats included) — dynamic code (interpreters) calls
+      # abs/1 on whatever it has. Gated on float mode ($float doesn't exist otherwise).
+      "$num_abs" =>
+        if(Process.get(:float),
+          do: """
+            (func $num_abs (param $x (ref null eq)) (result (ref null eq))
+              (if (ref.test (ref $float) (local.get $x))
+                (then (return (struct.new $float (f64.abs (struct.get $float 0 (ref.cast (ref $float) (local.get $x))))))))
+              (if (i32.lt_s (call $int_cmp (local.get $x) (ref.i31 (i32.const 0))) (i32.const 0))
+                (then (return (call $int_sub (ref.i31 (i32.const 0)) (local.get $x)))))
+              (local.get $x))\
+          """,
+          else: "  (func $num_abs (param $x (ref null eq)) (result (ref null eq)) (unreachable))"),
       # ── time: a deterministic monotonic counter (the $monotime global, "native" = nanoseconds,
       # +1µs per read). Pure programs see consistent budgets; real host time is a later upgrade.
       "$time_unit_hz" =>

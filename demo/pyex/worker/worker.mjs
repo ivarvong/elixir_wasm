@@ -31,7 +31,15 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("ok " + Object.keys(e).length);
     if (req.method === "POST") {
-      const source = await req.text();
+      // query params become Python variables, prepended as assignments: numbers stay numeric
+      // literals, everything else a (escaped) string. ?lat1=33.94&code1=LAX -> lat1 = 33.94 ...
+      const prelude = [...url.searchParams]
+        .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+        .slice(0, 32)
+        .map(([k, v]) => `${k} = ${/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v) ? v : JSON.stringify(String(v).slice(0, 256))}`)
+        .join("\n");
+      const body = await req.text();
+      const source = prelude ? prelude + "\n" + body : body;
       if (source.length > 65536) return new Response("source too large (64KB max)", { status: 413 });
       try {
         const t0 = Date.now();

@@ -86,7 +86,13 @@ defmodule Codegen.Emit do
           end
           {[set.(d, e)], false}
         {:gc_bif, :-, _f, _l, [a], d} ->
-          e = if Process.get(:bignum), do: "(call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})", else: "(ref.i31 (i32.sub (i32.const 0) #{i32v.(a)}))"
+          # unary minus must stay float-capable in float mode (dynamic code negates floats:
+          # an interpreter's USub on -118.4085 reaches here with a $float operand)
+          e = cond do
+            Process.get(:float) -> "(call $num_sub (ref.i31 (i32.const 0)) #{val.(a)})"
+            Process.get(:bignum) -> "(call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})"
+            true -> "(ref.i31 (i32.sub (i32.const 0) #{i32v.(a)}))"
+          end
           {[set.(d, e)], false}
         {:gc_bif, :+, _f, _l, [a], d} -> {[set.(d, val.(a))], false}
         # comparison bifs used as VALUES (not tests) -> the atom true/false
@@ -96,15 +102,20 @@ defmodule Codegen.Emit do
         # abs / min / max — integer fast path (general term ordering is a TODO)
         {gop, :abs, _f, _l, [a], d} when gop in [:gc_bif, :bif] ->
           x = i32v.(a)
-          e = if Process.get(:bignum),
-            do: "(if (result (ref null eq)) (i32.lt_s (call $int_cmp #{val.(a)} (ref.i31 (i32.const 0))) (i32.const 0)) (then (call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})) (else #{val.(a)}))",
-            else: "(ref.i31 (select (i32.sub (i32.const 0) #{x}) #{x} (i32.lt_s #{x} (i32.const 0))))"
+          e = cond do
+            # float mode: dynamic code calls abs/1 on floats — the tier-aware helper
+            Process.get(:float) -> "(call $num_abs #{val.(a)})"
+            Process.get(:bignum) -> "(if (result (ref null eq)) (i32.lt_s (call $int_cmp #{val.(a)} (ref.i31 (i32.const 0))) (i32.const 0)) (then (call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})) (else #{val.(a)}))"
+            true -> "(ref.i31 (select (i32.sub (i32.const 0) #{x}) #{x} (i32.lt_s #{x} (i32.const 0))))"
+          end
           {[set.(d, e)], false}
         {:bif, :abs, _f, [a], d} ->
           x = i32v.(a)
-          e = if Process.get(:bignum),
-            do: "(if (result (ref null eq)) (i32.lt_s (call $int_cmp #{val.(a)} (ref.i31 (i32.const 0))) (i32.const 0)) (then (call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})) (else #{val.(a)}))",
-            else: "(ref.i31 (select (i32.sub (i32.const 0) #{x}) #{x} (i32.lt_s #{x} (i32.const 0))))"
+          e = cond do
+            Process.get(:float) -> "(call $num_abs #{val.(a)})"
+            Process.get(:bignum) -> "(if (result (ref null eq)) (i32.lt_s (call $int_cmp #{val.(a)} (ref.i31 (i32.const 0))) (i32.const 0)) (then (call $int_sub (ref.i31 (i32.const 0)) #{val.(a)})) (else #{val.(a)}))"
+            true -> "(ref.i31 (select (i32.sub (i32.const 0) #{x}) #{x} (i32.lt_s #{x} (i32.const 0))))"
+          end
           {[set.(d, e)], false}
         {gop, mm, _f, _l, [a, b], d} when gop in [:gc_bif, :bif] and mm in [:min, :max] ->
           x = i32v.(a); y = i32v.(b); c = if mm == :min, do: "i32.lt_s", else: "i32.gt_s"
