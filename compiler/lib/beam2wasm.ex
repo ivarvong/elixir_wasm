@@ -171,7 +171,7 @@ defmodule Beam2Wasm do
         match?({_, _, {:extfunc, :crypto, :hash, 2}}, op) or match?({_, _, {:extfunc, :crypto, :hash, 2}, _}, op)
       end)
     end)
-    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
+    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :trim_all, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
               :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio, :badarg, :short, :decimals, :compact, :undef, :utf8, :latin1] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++

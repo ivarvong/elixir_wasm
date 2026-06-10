@@ -129,6 +129,25 @@ defmodule Conf do
           %{fn: "sz", sig: {[:bin], :int}, inputs: [["hello"], ["héllo"]]},
           %{fn: "upc", sig: {[:bin], :bin}, inputs: [["Hello, World!"], ["abc 123"]]}
         ]},
+      # binary:split full surface: list-of-binaries patterns (leftmost, longest at equal pos),
+      # :trim / :trim_all, and String.split/1 whitespace (which is exactly that via String.Break).
+      %{cat: "bin-split", extra: [Enum, String, String.Break, :lists], src: """
+        defmodule CSplit do
+          def multi(s), do: :binary.split(s, ["--", ","], [:global]) |> Enum.join("|")
+          def once(s), do: :binary.split(s, [",", ";"]) |> Enum.join("|")
+          def longest(s), do: :binary.split(s, ["ab", "abc"], [:global]) |> Enum.join("|")
+          def trim(s), do: :binary.split(s, " ", [:global, :trim]) |> Enum.join("|")
+          def trim_all(s), do: :binary.split(s, " ", [:global, :trim_all]) |> Enum.join("|")
+          def ws(s), do: String.split(s) |> Enum.join("|")
+        end
+        """, cases: [
+          %{fn: "multi", sig: {[:bin], :bin}, inputs: [["a--b,c--d"], ["x"], [",--"]]},
+          %{fn: "once", sig: {[:bin], :bin}, inputs: [["a;b,c"], ["abc"]]},
+          %{fn: "longest", sig: {[:bin], :bin}, inputs: [["xxabcyy"], ["zabz"]]},
+          %{fn: "trim", sig: {[:bin], :bin}, inputs: [["a b  c   "], ["   "]]},
+          %{fn: "trim_all", sig: {[:bin], :bin}, inputs: [["  a  b "], [""]]},
+          %{fn: "ws", sig: {[:bin], :bin}, inputs: [["  hello   world "], ["one two  three"]]}
+        ]},
       %{cat: "closures", src: """
         defmodule CClos do
           def map([], _f), do: []

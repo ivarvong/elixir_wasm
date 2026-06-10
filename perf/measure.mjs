@@ -10,6 +10,7 @@
 //     attribution: it says exactly which functions and which tier crossings cost the time.
 import { Session } from "node:inspector";
 import fs from "node:fs";
+import { makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "../runtime/imports.mjs";
 
 const args = process.argv.slice(2);
 const wasmPath = args[0], casesPath = args[1];
@@ -44,10 +45,14 @@ const mathRaw = Object.fromEntries(
 let e;
 const rdBin = b => { const n = e.bin_len(b); const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = e.bin_get(b, i); return decU.decode(u); };
 const wrBin = s => { const u = encU.encode(s); const b = e.bin_alloc(u.length); u.forEach((c, i) => e.bin_put(b, i, c)); return b; };
-const strRaw = { upcase: b => wrBin(rdBin(b).toUpperCase()), downcase: b => wrBin(rdBin(b).toLowerCase()) };
+const strRaw = makeStr(() => e);
 
 function instantiate(count) {
-  const imports = { big: wrap(bigRaw, count), math: wrap(mathRaw, count), str: wrap(strRaw, count) };
+  // every import module must be default-provided: feeding stdlib beams flips modes on
+  // (Kernel -> proc, IO.warn -> io), and a missing module fails instantiation entirely.
+  const { proc, sched } = makeProcStubs();
+  const imports = { big: wrap(bigRaw, count), math: wrap(mathRaw, count), str: wrap(strRaw, count),
+                    proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) };
   const inst = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), imports);
   e = inst.exports;
 }

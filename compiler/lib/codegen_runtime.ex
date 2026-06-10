@@ -570,31 +570,75 @@ defmodule Codegen.Runtime do
               (br $lp)))
             (i32.const 0))\
         """,
-      # binary:split(Subject, Pattern[, Opts]) — Opts with :global splits on every occurrence.
+      # binary:split(Subject, Pattern[, Opts]) — Pattern is a single binary OR a list of binaries
+      # (leftmost occurrence wins; at equal positions the longest pattern, per binary:match/2).
+      # Opts: :global (every occurrence), :trim (drop trailing empties), :trim_all (drop all empties).
       "$binary.split_2" =>
         """
           (func $binary.split_2 (param $subj (ref null eq)) (param $pat (ref null eq)) (result (ref null eq))
-            (return_call $bsplit (local.get $subj) (local.get $pat) (i32.const 0)))\
+            (return_call $bsplit (local.get $subj) (local.get $pat) (i32.const 0) (i32.const 0)))\
         """,
       "$binary.split_3" =>
         """
           (func $binary.split_3 (param $subj (ref null eq)) (param $pat (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
-            (return_call $bsplit (local.get $subj) (local.get $pat) (call $list_has_atom (local.get $opts) (global.get $atom_global))))\
+            (return_call $bsplit (local.get $subj) (local.get $pat)
+              (call $list_has_atom (local.get $opts) (global.get $atom_global))
+              (if (result i32) (call $list_has_atom (local.get $opts) (global.get $atom_trim_all))
+                (then (i32.const 2))
+                (else (call $list_has_atom (local.get $opts) (global.get $atom_trim))))))\
+        """,
+      # leftmost (then longest) occurrence of any pattern in the $cons list, from byte $from.
+      # Packed result: (pos << 32) | matched_len, or -1 when nothing matches.
+      "$bin_find_any" =>
+        """
+          (func $bin_find_any (param $s (ref $bytes)) (param $from i32) (param $pats (ref null eq)) (result i64)
+            (local $best_pos i32) (local $best_len i32) (local $c (ref null eq)) (local $p (ref $bytes)) (local $i i32)
+            (local.set $best_pos (i32.const -1))
+            (local.set $c (local.get $pats))
+            (block $done (loop $lp
+              (br_if $done (i32.eqz (ref.test (ref $cons) (local.get $c))))
+              (local.set $p (call $bin_bytes (struct.get $cons 0 (ref.cast (ref $cons) (local.get $c)))))
+              (local.set $i (call $bin_find (local.get $s) (local.get $from) (local.get $p)))
+              (if (i32.ge_s (local.get $i) (i32.const 0)) (then
+                (if (i32.or (i32.lt_s (local.get $best_pos) (i32.const 0))
+                            (i32.or (i32.lt_s (local.get $i) (local.get $best_pos))
+                                    (i32.and (i32.eq (local.get $i) (local.get $best_pos))
+                                             (i32.gt_s (array.len (local.get $p)) (local.get $best_len)))))
+                  (then (local.set $best_pos (local.get $i)) (local.set $best_len (array.len (local.get $p)))))))
+              (local.set $c (struct.get $cons 1 (ref.cast (ref $cons) (local.get $c))))
+              (br $lp)))
+            (if (i32.lt_s (local.get $best_pos) (i32.const 0)) (then (return (i64.const -1))))
+            (i64.or (i64.shl (i64.extend_i32_u (local.get $best_pos)) (i64.const 32))
+                    (i64.extend_i32_u (local.get $best_len))))\
         """,
       "$bsplit" =>
         """
-          (func $bsplit (param $subj (ref null eq)) (param $pat (ref null eq)) (param $glob i32) (result (ref null eq))
-            (local $s (ref $bytes)) (local $p (ref $bytes)) (local $pn i32) (local $sn i32) (local $prev i32) (local $i i32) (local $parts (ref null eq))
-            (local.set $s (call $bin_bytes (local.get $subj))) (local.set $p (call $bin_bytes (local.get $pat)))
-            (local.set $pn (array.len (local.get $p))) (local.set $sn (array.len (local.get $s)))
+          (func $bsplit (param $subj (ref null eq)) (param $pat (ref null eq)) (param $glob i32) (param $trim i32) (result (ref null eq))
+            (local $s (ref $bytes)) (local $sn i32) (local $prev i32) (local $hit i64) (local $pos i32) (local $plen i32)
+            (local $parts (ref null eq)) (local $pats (ref null eq))
+            (local.set $s (call $bin_bytes (local.get $subj)))
+            (local.set $sn (array.len (local.get $s)))
+            (local.set $pats (if (result (ref null eq)) (ref.test (ref $cons) (local.get $pat))
+              (then (local.get $pat))
+              (else (struct.new $cons (local.get $pat) (ref.null none)))))
             (block $done (loop $lp
-              (local.set $i (call $bin_find (local.get $s) (local.get $prev) (local.get $p)))
-              (br_if $done (i32.lt_s (local.get $i) (i32.const 0)))
-              (local.set $parts (struct.new $cons (call $subbin (local.get $s) (local.get $prev) (i32.sub (local.get $i) (local.get $prev))) (local.get $parts)))
-              (local.set $prev (i32.add (local.get $i) (local.get $pn)))
+              (local.set $hit (call $bin_find_any (local.get $s) (local.get $prev) (local.get $pats)))
+              (br_if $done (i64.lt_s (local.get $hit) (i64.const 0)))
+              (local.set $pos (i32.wrap_i64 (i64.shr_u (local.get $hit) (i64.const 32))))
+              (local.set $plen (i32.wrap_i64 (local.get $hit)))
+              (if (i32.or (i32.ne (local.get $trim) (i32.const 2)) (i32.ne (local.get $pos) (local.get $prev)))
+                (then (local.set $parts (struct.new $cons (call $subbin (local.get $s) (local.get $prev) (i32.sub (local.get $pos) (local.get $prev))) (local.get $parts)))))
+              (local.set $prev (i32.add (local.get $pos) (local.get $plen)))
               (br_if $done (i32.eqz (local.get $glob)))
               (br $lp)))
-            (local.set $parts (struct.new $cons (call $subbin (local.get $s) (local.get $prev) (i32.sub (local.get $sn) (local.get $prev))) (local.get $parts)))
+            (if (i32.or (i32.ne (local.get $trim) (i32.const 2)) (i32.ne (local.get $prev) (local.get $sn)))
+              (then (local.set $parts (struct.new $cons (call $subbin (local.get $s) (local.get $prev) (i32.sub (local.get $sn) (local.get $prev))) (local.get $parts)))))
+            (if (i32.eq (local.get $trim) (i32.const 1)) (then
+              (block $t (loop $tl
+                (br_if $t (i32.eqz (ref.test (ref $cons) (local.get $parts))))
+                (br_if $t (i32.ne (array.len (call $bin_bytes (struct.get $cons 0 (ref.cast (ref $cons) (local.get $parts))))) (i32.const 0)))
+                (local.set $parts (struct.get $cons 1 (ref.cast (ref $cons) (local.get $parts))))
+                (br $tl)))))
             (return_call $lists.reverse_1 (local.get $parts)))\
         """,
       "$binary.matches_2" =>
@@ -642,7 +686,7 @@ defmodule Codegen.Runtime do
         """
           (func $binary.replace_4 (param $subj (ref null eq)) (param $pat (ref null eq)) (param $rep (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
             (local $parts (ref null eq))
-            (local.set $parts (call $bsplit (local.get $subj) (local.get $pat) (call $list_has_atom (local.get $opts) (global.get $atom_global))))
+            (local.set $parts (call $bsplit (local.get $subj) (local.get $pat) (call $list_has_atom (local.get $opts) (global.get $atom_global)) (i32.const 0)))
             (return_call $bin_join (local.get $parts) (local.get $rep)))\
         """,
       "$bin_join" =>

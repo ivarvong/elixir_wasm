@@ -114,7 +114,20 @@ export const makeStr = (getExports) => {
     s = s.replace(/\(\?>/g, "(?:");
     return new RegExp(s, flags);
   };
-  const jsre = (patB, optsB, extraFlags = "") => pcre2js(rdBin(patB), rdBin(optsB), extraFlags);
+  // Compiled-RegExp cache: Earmark's LineScanner runs ~30 patterns per LINE, and without this
+  // every host call re-runs the PCRE->JS translation + `new RegExp`. lastIndex is reset on every
+  // hit because re_scan hands out "g" regexes whose exec loop mutates it.
+  const reCache = new Map();
+  const jsre = (patB, optsB, extraFlags = "") => {
+    const key = rdBin(patB) + "\x00" + rdBin(optsB) + "\x00" + extraFlags;
+    let re = reCache.get(key);
+    if (!re) {
+      re = pcre2js(rdBin(patB), rdBin(optsB), extraFlags);
+      if (reCache.size < 4096) reCache.set(key, re);
+    }
+    re.lastIndex = 0;
+    return re;
+  };
 
   // Regex.split -> JS .split. Frame parts as <<count:32, (len:32, bytes)...>> big-endian.
   const re_split = (patB, optsB, subjB) => {

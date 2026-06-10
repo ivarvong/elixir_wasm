@@ -7,6 +7,10 @@ defmodule Blog do
     ~s|{"title":"Exact Integers","author":"linus","tags":["bignum"],"reads":42,"body":"# fact(50)\\n\\nArithmetic is **exact**: i31 to host BigInt.\\n\\n> Bit-identical to the VM.\\n"}|
   ]
 
+  # bin->bin entry: render an arbitrary markdown document through the real Earmark engine.
+  # Used by bench_vs_js.exs to compare against JS markdown renderers on identical input.
+  def render_md(md) when is_binary(md), do: Earmark.as_html!(md)
+
   def render(seed) do
     doc = Enum.at(@articles, rem(abs(seed), length(@articles))) |> Jason.decode!()
     body = Earmark.as_html!(Map.get(doc, "body"))

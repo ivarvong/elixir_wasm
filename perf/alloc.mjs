@@ -12,6 +12,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "../runtime/imports.mjs";
 
 const args = process.argv.slice(2);
 
@@ -34,8 +35,11 @@ if (args[0] === "--child") {
   let e;
   const wrBin = s => { const u = encU.encode(s); const b = e.bin_alloc(u.length); u.forEach((c, i) => e.bin_put(b, i, c)); return b; };
   const rdBin = b => { const n = e.bin_len(b); const u = new Uint8Array(n); for (let i = 0; i < n; i++) u[i] = e.bin_get(b, i); return decU.decode(u); };
-  const str = { upcase: b => wrBin(rdBin(b).toUpperCase()), downcase: b => wrBin(rdBin(b).toLowerCase()) };
-  e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)), { big, math, str }).exports;
+  // every import module must be default-provided (stdlib beams flip proc/io modes on)
+  const str = makeStr(() => e);
+  const { proc, sched } = makeProcStubs();
+  e = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(wasmPath)),
+    { big, math, str, proc, sched, fs: makeFs(() => e, memFsBacking()), io: makeIo(() => e) }).exports;
   const cases = JSON.parse(fs.readFileSync(casesPath, "utf8"));
   const toL = a => a.reduceRight((l, x) => e.cons(x, l), e.nil());
   const encArg = a => a.type === "int" ? a.val : a.type === "bin" ? wrBin(a.val) : a.type === "list" ? toL(a.val) : (() => { throw 0; })();
