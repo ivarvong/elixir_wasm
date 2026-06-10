@@ -354,7 +354,8 @@ defmodule Beam2Wasm do
       "  (type $map (struct (field (ref null $mnode))))",
       "  (type $bytes (array (mut i8)))",
       "  (type $binary (struct (field (ref $bytes))))",
-      "  (type $mctx (struct (field (ref $bytes)) (field (mut i32))))",
+      "  (type $mctx (struct (field (ref $bytes)) (field (mut i32)) (field i32)))",   # bytes, pos-bits, end-bits
+      "  (type $bitstr (struct (field (ref $bytes)) (field i32)))",   # sub-byte bitstring VALUE: bytes (MSB-padded), bit length
       "  (type $freevars (array (ref null eq)))",
       "  (type $fun (struct (field i32) (field (ref $freevars))))",
       # Pids and references are DISTINCT boxed types (not plain i31 integers), so is_pid/is_reference
@@ -880,10 +881,8 @@ defmodule Beam2Wasm do
         # edge_refs covers direct/ext calls + make_fun3; literal_funs_in covers CAPTURED funs
         # (`&Mod.f/a`, `&abs/1`) which the BEAM stores as constant fun values — also roots, else
         # their target bodies get pruned and the apply/trampoline dispatch falls to (unreachable).
-        # Float.floor/ceil/round at precision 0 are shimmed as LEAVES (see float_builtins), so don't
-        # follow their BEAM edges into the IEEE bit-decomposition machinery (Float.round/3 etc.).
         targets =
-          if k in [{Float, :floor, 2}, {Float, :ceil, 2}, {Float, :round, 2}, {Req.Finch, :run, 1}],
+          if k in [{Req.Finch, :run, 1}],
             do: [],   # Req.Finch.run/1 is overridden (the adapter) → a leaf, so the ssl/inet/pool subtree is pruned
             else: Enum.flat_map(is, &edge_refs/1) ++ Enum.flat_map(is, &literal_funs_in/1)
         # erlang:spawn_opt / apply / spawn(M,F,A) dispatch on a RUNTIME M:F/A, which DCE can't trace —

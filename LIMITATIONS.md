@@ -139,10 +139,13 @@ error/raise machinery, term primitives, full Regex surface, dynamic-atom lookups
 OTP-27 map cursor, and sub-byte bitstring match/construct are all built and verified. The scoreboard
 stands at **296/299 (99.0%)** with nine of ten modules perfect.
 
-**The one remaining representation class:** bitstring VALUES with non-byte bit lengths (a `$binary`
-carrying a bit-length) — what `Float.round/ceil/floor` with precision (52-bit `:binary` segments) and
-gaps p18 (10-bit packed streams) need. A bounded, designed change: add a bit-length field consulted by
-the binary ops; tracked as the next focused piece.
+**BUILT — bitstring values (the final class):** a distinct `$bitstr` type (bytes + bit-length;
+`is_binary(<<1::4>>)` correctly false), match contexts carry an end-bit, sub-byte `:binary`
+extraction, bit-mode construction with dynamic sizes and bitstring-append, little-endian segments
+both directions, and bitstring literals. `Float.round/ceil/floor` run the REAL IEEE
+bit-decomposition (the old precision-0-only shim and its DCE bypass were deleted), and gaps p18's
+10-bit packed protocol is provably correct. **The §3 inventory is now empty of known classes:**
+gaps 20/20, scoreboard 299/299 (100.0%).
 
 ---
 

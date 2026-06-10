@@ -953,6 +953,53 @@ defmodule Codegen.Runtime do
         """,
       # integer term -> i64 across the tiers (i31 / $i64 / host $big), for bit-segment values.
       "$term_i64" => term_i64_wat(Process.get(:bignum)),
+      # little-endian byte-multiple integer read (id::little-16 etc.): bytes ascending, shifts ascending.
+      "$bits_read64_le" =>
+        """
+          (func $bits_read64_le (param $b (ref null $bytes)) (param $pos i32) (param $n i32) (result i64)
+            (local $i i32) (local $nb i32) (local $acc i64) (local $byte i32)
+            (local.set $nb (i32.div_u (local.get $n) (i32.const 8)))
+            (local.set $byte (i32.div_u (local.get $pos) (i32.const 8)))
+            (block $d (loop $l
+              (br_if $d (i32.ge_u (local.get $i) (local.get $nb)))
+              (local.set $acc (i64.or (local.get $acc)
+                (i64.shl (i64.extend_i32_u (array.get_u $bytes (local.get $b) (i32.add (local.get $byte) (local.get $i))))
+                         (i64.extend_i32_u (i32.shl (local.get $i) (i32.const 3))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $l)))
+            (local.get $acc))\
+        """,
+      # MSB-first bit-range copy between byte arrays (sub-byte extraction/append). Per-bit; not hot.
+      "$bits_copy" =>
+        """
+          (func $bits_copy (param $s (ref $bytes)) (param $sp i32) (param $d (ref $bytes)) (param $dp i32) (param $n i32)
+            (local $i i32) (local $bit i32) (local $bp i32) (local $byte i32)
+            (block $dn (loop $l
+              (br_if $dn (i32.ge_u (local.get $i) (local.get $n)))
+              (local.set $bp (i32.add (local.get $sp) (local.get $i)))
+              (local.set $bit (i32.and (i32.shr_u (array.get_u $bytes (local.get $s) (i32.div_u (local.get $bp) (i32.const 8)))
+                                                   (i32.sub (i32.const 7) (i32.rem_u (local.get $bp) (i32.const 8)))) (i32.const 1)))
+              (if (local.get $bit) (then
+                (local.set $bp (i32.add (local.get $dp) (local.get $i)))
+                (local.set $byte (i32.div_u (local.get $bp) (i32.const 8)))
+                (array.set $bytes (local.get $d) (local.get $byte)
+                  (i32.or (array.get_u $bytes (local.get $d) (local.get $byte))
+                          (i32.shl (i32.const 1) (i32.sub (i32.const 7) (i32.rem_u (local.get $bp) (i32.const 8))))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $l)))
+          )\
+        """,
+      # extract $n bits at bit-position $p of $s into a fresh value: $bitstr when n%8 != 0, else $binary.
+      "$bits_extract" =>
+        """
+          (func $bits_extract (param $s (ref $bytes)) (param $p i32) (param $n i32) (result (ref null eq))
+            (local $d (ref $bytes))
+            (local.set $d (array.new_default $bytes (i32.div_u (i32.add (local.get $n) (i32.const 7)) (i32.const 8))))
+            (call $bits_copy (local.get $s) (local.get $p) (local.get $d) (i32.const 0) (local.get $n))
+            (if (result (ref null eq)) (i32.rem_u (local.get $n) (i32.const 8))
+              (then (struct.new $bitstr (local.get $d) (local.get $n)))
+              (else (struct.new $binary (local.get $d)))))\
+        """,
       # :unicode NF* normalization — host (JS .normalize, same Unicode tables). Gated bodies.
       "$unicode.characters_to_nfc_binary_1" => uninorm_wat("nfc"),
       "$unicode.characters_to_nfd_binary_1" => uninorm_wat("nfd"),
@@ -1232,11 +1279,6 @@ defmodule Codegen.Runtime do
               (func $erlang.exit_1 (param $reason (ref null eq)) (result (ref null eq))
                 (unreachable))\
             """)),
-      "$erlang.integer_to_list_1" =>
-        """
-          (func $erlang.integer_to_list_1 (param $n (ref null eq)) (result (ref null eq))
-            (ref.null none))\
-        """,
       # list_to_integer/1,2 — charlist -> $binary, then delegate to the mode-gated binary_to_integer/2
       # (one parsing implementation: bignum-safe in exact mode, base-aware, consistent digit checks).
       "$erlang.list_to_integer_1" =>
@@ -1650,7 +1692,9 @@ defmodule Codegen.Runtime do
         base
       end
     base =
-      if Process.get(:float), do: Map.merge(base, float_builtins()), else: base
+      # NOTE: float_builtins (a precision-0-only Float.round/ceil/floor shim) was REMOVED — the
+      # real Float BEAM code (IEEE bit decomposition over $bitstr values) is fully supported now.
+      base
     # Real Req: override ONLY the adapter step. Req.Finch.run(request) -> {request, %Req.Response{}} with
     # the body from the host (the socket). All other Req steps (request build + response decode) run for real.
     if Process.get(:req_override) do
@@ -1673,21 +1717,6 @@ defmodule Codegen.Runtime do
         "    (array.new_fixed $tuple 2 (local.get $req) #{resp}))")
     else
       base
-    end
-  end
-
-  def float_builtins do
-    for f <- ["floor", "ceil", "round"], into: %{} do
-      body =
-        if f == "round",
-          do: "(f64.trunc (f64.add (call $to_f64 (local.get $x)) (f64.copysign (f64.const 0.5) (call $to_f64 (local.get $x)))))",
-          else: "(f64.#{f} (call $to_f64 (local.get $x)))"
-      {"$Elixir_46_Float.#{f}_2",
-        """
-          (func $Elixir_46_Float.#{f}_2 (param $x (ref null eq)) (param $p (ref null eq)) (result (ref null eq))
-            (if (i32.eqz (ref.eq (local.get $p) (ref.i31 (i32.const 0)))) (then (unreachable)))
-            (struct.new $float #{body}))\
-        """}
     end
   end
 
