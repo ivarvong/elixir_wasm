@@ -19,15 +19,15 @@ modeled vs. still open.
 
 | Area | State | Evidence |
 |------|-------|----------|
-| Substrate (JSPI stacks, kill/unwind, shared-heap GC) | **proven on workerd/V8** | `spikes/01-jspi-economics` |
-| Feasibility gate (size + perf go/no-go) | **GREEN** | `spikes/02-feasibility-gate` |
+| Substrate (JSPI stacks, kill/unwind, shared-heap GC) | **proven on workerd/V8** | `attic/spikes/01-jspi-economics` |
+| Feasibility gate (size + perf go/no-go) | **GREEN** | `attic/spikes/02-feasibility-gate` |
 | Frontend: real Elixir → WasmGC via OTP's `:beam_disasm` | **working compiler** | `compiler/` |
 | Correctness vs the Elixir VM (arith, bignum, floats, strings, maps, exceptions, OTP processes) | **161/161 bit-exact** | `conformance/` |
 | Differential fuzzing (a full ledger service, random ops) + 20-program gap corpus | **33/33 + 19/20 provably correct, 0 lies** | `fuzz/`, `gaps/` |
 | Real process runtime: spawn/send/receive, links/monitors, GenServer/Supervisor, kill-by-unwind, fairness | **working (JSPI scheduler)** | `runtime/` |
-| Real unmodified hex libs (`Jason` encode, `Req` + `:crypto`) on WasmGC | **bit-exact** | `jason-demo/`, `demo/` |
-| Running in a Durable Object on workerd, durable across restart | **working** | `durable-object/` |
-| Cold start, preemption, arbitrary-precision integers | **measured** | `measurements/` |
+| Real unmodified hex libs (`Jason` encode, `Req` + `:crypto`) on WasmGC | **bit-exact** | `attic/jason-demo/`, `demo/` |
+| Running in a Durable Object on workerd, durable across restart | **working** | `attic/durable-object/` |
+| Cold start, preemption, arbitrary-precision integers | **measured** | `attic/measurements/` |
 | Throughput / tail latency / cost-per-actor at scale | **open — needs real Cloudflare** | `ROADMAP.md` |
 
 **One-line takeaways from the measurements:** per-DO instantiation ~10µs (workerd-confirmed);
@@ -36,6 +36,23 @@ thread monopolization; integer arithmetic is exact at arbitrary precision (`fact
 the Elixir VM).
 
 ---
+
+## Directory map
+
+| dir | what |
+|---|---|
+| `compiler/` | the BEAM→WasmGC compiler (a Mix package: `mix wasm.build`) + CLI shim |
+| `runtime/` | shared host imports (`imports.mjs`), JSPI scheduler, term walker, deep-stack helper |
+| `verify.exs` | **the** verification manifest — 8 differential suites, pinned floors, one command |
+| `conformance/` `fuzz/` `gaps/` `genfuzz/` `regexdiff/` `scoreboard/` | the suites (see LIMITATIONS.md §4) |
+| `perf/` | measurement harnesses: constant factors, scaling exponents, allocation, unboxing log |
+| `demo/markdown` | real Jason+Earmark, byte-exact; deployed (elixir-markdown) |
+| `demo/durable-sql` | Elixir querying the DO's SQLite; deployed (elixir-sqlite-ledger) |
+| `demo/pyex` | Python-on-WasmGC via pyex; deployed (elixir-python) |
+| `demo/effects` | the File/IO host-effects differential |
+| `durable-genserver/` | the compiled GenServer in a Durable Object; deployed (elixir-durable-bank) |
+| `interp/` | the BEAM-interpreter tier seed (runtime code loading; roadmap) |
+| `attic/` | preserved history — superseded spikes and demos, nothing live |
 
 ## Read in this order
 
@@ -49,12 +66,12 @@ the Elixir VM).
 5. **`fuzz/`** & **`gaps/`** — a differential fuzzer (random ledger ops) and 20 realistic programs; together
    they enumerate the remaining stdlib gaps and keep the compiler honest (it traps, it doesn't lie).
 6. **`perf/`** — attribution + scaling harnesses (these found the map O(n²) and the bignum-boundary tax).
-7. **`interp/`**, **`jason-demo/`**, **`demo/`** — a self-hosted BEAM interpreter (hot-reload seed); real
+7. **`interp/`**, **`attic/jason-demo/`**, **`demo/`** — a self-hosted BEAM interpreter (hot-reload seed); real
    unmodified `Jason` encoding; real `Req` + `:crypto` — all on WasmGC, bit-exact vs the VM.
-8. **`durable-object/`** & **`durable-genserver/`** — the compiled state machine / a real GenServer as a
+8. **`attic/durable-object/`** & **`durable-genserver/`** — the compiled state machine / a real GenServer as a
    Durable Object, state surviving restart (the product thesis, demonstrated).
-9. **`measurements/README.md`** — the runtime guarantees, measured.
-10. **`spikes/`** — the substrate validation the whole thing rests on.
+9. **`attic/measurements/README.md`** — the runtime guarantees, measured.
+10. **`attic/spikes/`** — the substrate validation the whole thing rests on.
 11. **`ROADMAP.md`** & **`BUILD.md`** — phased build plan, and the exact toolchain/commands to reproduce.
 
 ---

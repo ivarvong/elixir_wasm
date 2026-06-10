@@ -29,9 +29,9 @@ Notes:
 elixir-wasm-edge/
   README.md            ARCHITECTURE.md   ROADMAP.md   BUILD.md
   compiler/            beam2wasm.exs + README + examples/  (the BEAM→WasmGC compiler)
-  durable-object/      worker.js + config.capnp + account_aot.wasm  (DO on workerd)
-  measurements/        the 3 runtime-guarantee docs + reproducible harnesses
-  spikes/              substrate validation + feasibility gate + evals + Workflows spec
+  attic/durable-object/      worker.js + config.capnp + account_aot.wasm  (DO on workerd)
+  attic/measurements/        the 3 runtime-guarantee docs + reproducible harnesses
+  attic/spikes/              substrate validation + feasibility gate + evals + Workflows spec
 ```
 
 ## Reproduce: compile & run an Elixir program
@@ -91,13 +91,13 @@ node --experimental-wasm-jspi bignum.mjs
 ## Reproduce: the spikes
 
 Each spike directory has its own `RESULTS.md` / `README.md` with commands. In brief:
-- `spikes/01-jspi-economics` — `node --experimental-wasm-jspi harness.mjs` (process economics);
+- `attic/spikes/01-jspi-economics` — `node --experimental-wasm-jspi harness.mjs` (process economics);
   `spikeB.mjs` (kill/unwind), `spikeC.mjs` (shared-heap GC); workerd configs for the on-runtime runs.
-- `spikes/02-feasibility-gate` — `closure.mjs` (transitive `.beam` import-closure walker), `perf.mjs`
+- `attic/spikes/02-feasibility-gate` — `closure.mjs` (transitive `.beam` import-closure walker), `perf.mjs`
   (AOT vs JS-port vs BEAM-interpreter), `*_lift.wat` (hand-lifted WasmGC reference).
-- `spikes/03-durable-statem-eval` — `workerd serve config.capnp`, then drive the fault scenarios
+- `attic/spikes/03-durable-statem-eval` — `workerd serve config.capnp`, then drive the fault scenarios
   (happy/retry/concurrent/crash/invalid) per its README.
-- `spikes/04-beam-loader-smoketest` — the from-scratch `.beam` loader/interpreter (`runbeam.mjs`),
+- `attic/spikes/04-beam-loader-smoketest` — the from-scratch `.beam` loader/interpreter (`runbeam.mjs`),
   superseded by `:beam_disasm` but kept as documentation of the bytecode format.
 
 ## Engine flags cheat-sheet

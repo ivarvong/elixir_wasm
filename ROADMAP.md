@@ -27,17 +27,17 @@ dependency and value; the two keystones are called out first.
 
 ## Phase 0 — Feasibility (DONE)
 
-- `[done]` Substrate: JSPI process economics, kill/unwind, shared-heap GC (`spikes/01`).
-- `[done]` Size + perf go/no-go gate, GREEN (`spikes/02`): actor closure ~0.36MB gz bytecode pruned vs
+- `[done]` Substrate: JSPI process economics, kill/unwind, shared-heap GC (`attic/spikes/01`).
+- `[done]` Size + perf go/no-go gate, GREEN (`attic/spikes/02`): actor closure ~0.36MB gz bytecode pruned vs
   10MB cap; WasmGC ≈ BEAM bytecode size; AOT ~1.7 ns/call (~2.6× a JS-backend port; far faster than a
   BEAM interpreter).
 - `[done]` Frontend: real Elixir → WasmGC via `:beam_disasm` (`compiler/`).
 - `[done]` Non-trivial programs validated vs the Elixir VM: merge sort, an expression interpreter, a
   map-based state machine (`compiler/examples`).
-- `[done]` Running in a Durable Object on workerd, durable across process restart (`durable-object/`).
-- `[done]` Three runtime guarantees measured (`measurements/`): cold start, preemption, exact integers.
+- `[done]` Running in a Durable Object on workerd, durable across process restart (`attic/durable-object/`).
+- `[done]` Three runtime guarantees measured (`attic/measurements/`): cold start, preemption, exact integers.
 - `[done]` Durable `gen_statem` fault-injection eval — OTP discipline yields exactly-once-under-failure
-  where naive DO code double-charges/corrupts (`spikes/03`).
+  where naive DO code double-charges/corrupts (`attic/spikes/03`).
 
 ---
 
@@ -135,7 +135,7 @@ dependency and value; the two keystones are called out first.
 
 - `[CF]` Throughput, tail latency, and **cost-per-actor** at scale; cold start under real isolate
   scheduling (local workerd gives mechanism + ~10µs instantiate, not scale).
-- `[CF]` Run the **Workflows comparison** (`spikes/workflows-comparison-spec.md`) four ways
+- `[CF]` Run the **Workflows comparison** (`attic/spikes/workflows-comparison-spec.md`) four ways
   (ours / raw-DO / Workflow / Fly-BEAM) to settle the contested middle (§14 of ARCHITECTURE).
 - `[CF]` Max concurrent JSPI processes per isolate under the real 128MB cap (spike 1 estimates ~15–25k).
 

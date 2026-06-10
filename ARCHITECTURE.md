@@ -20,7 +20,7 @@ a full BEAM node. It deliberately does **not** target BEAM's massive-soft-realti
 (LiveView, millions of cheap processes), where the runtime tradeoffs below are weakest.
 
 Name it precisely in external materials: an **"Elixir-flavored durable edge runtime,"** not "the BEAM on
-Workers." The deltas (below and in `spikes/`) are stated honestly.
+Workers." The deltas (below and in `attic/spikes/`) are stated honestly.
 
 ---
 
@@ -54,7 +54,7 @@ This was the single biggest simplification, validated in the prototype:
 - `:beam_disasm` returns clean symbolic instructions (`{:test, :is_ge, ...}`, `{:put_map_assoc, ...}`,
   calls as `{M,F,A}`), and **normalizes typed registers** — so we ingest *default* Elixir output with no
   special compile flags. (An earlier hand-rolled `.beam` byte-decoder needed `+no_type_opt`; deleting it
-  removed that constraint. See `spikes/04-beam-loader-smoketest` for the from-scratch loader that proved
+  removed that constraint. See `attic/spikes/04-beam-loader-smoketest` for the from-scratch loader that proved
   the format, now superseded by `:beam_disasm`.)
 - `:beam_disasm` also **decodes literals to real terms** and **exposes BEAM's type analysis** (typed
   registers like `{:tr, {:x,0}, {t_integer,...}}`) — both of which we exploit (literal materialization;
@@ -191,7 +191,7 @@ process stacks shallow). The compiler emits real Wasm tail calls for BEAM tail c
 `[D]` **Preemption via reduction counting + JSPI suspend.** BEAM gives each process a reduction budget
 (≈ one per call) and preempts when it's spent — the soft-real-time guarantee that no process starves the
 scheduler. We reproduce it: the compiler injects, at each function entry, a decrement + check that calls
-a **suspending `yield` import** when the budget hits zero, then resets it. Measured (`measurements/
+a **suspending `yield` import** when the budget hits zero, then resets it. Measured (`attic/measurements/
 02-preemption.md`): +14% worst-case overhead on tiny `fib`; a co-runner advanced 143× during a yielding
 `fib(32)` vs 0× during a blocking one. Tail-recursive loops are covered because each iteration re-enters
 the function.
@@ -238,7 +238,7 @@ term semantics; capnp is just the transport between DOs/isolates.
 alarms. This is *persistence per actor*, which the BEAM does not have natively (a BEAM process is
 in-memory; durability is bolted on with ETS/Mnesia/external stores). On the durability axis the edge
 substrate is **ahead** of BEAM. `code_change/3`-style state migration maps onto DO storage (SQLite-backed
-→ real schema migration). The prototype DO (`durable-object/`) demonstrates state surviving a full
+→ real schema migration). The prototype DO (`attic/durable-object/`) demonstrates state surviving a full
 process restart.
 
 ---
@@ -298,7 +298,7 @@ accordingly.
 orchestration; external events via `waitForEvent`), while Durable Objects/Agents "run indefinitely" with
 app-defined failure handling. So: unbounded reactive entities → DO side (our differentiator is safe);
 linear orchestration → Workflows wins (don't target it); bounded-lifecycle entities like an order are the
-**contested middle** and the real competitive test. `spikes/workflows-comparison-spec.md` specifies the
+**contested middle** and the real competitive test. `attic/spikes/workflows-comparison-spec.md` specifies the
 four-way eval (ours / raw-DO / Workflow / Fly-BEAM) to settle it. Note: `step.do` memoization beats raw
 DO on retry, but replay-safety of side effects is still the developer's responsibility — i.e. it needs
 the *same* idempotency-key discipline our state machine enforces by construction.
