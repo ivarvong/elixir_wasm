@@ -29,6 +29,8 @@ defmodule Codegen.Emit do
     # (the chain lives in locals); cross-function tail calls are demoted to call+epilogue so
     # the patch always runs (see demote_tails).
     {blocks, trmc?} = trmc_rewrite(blocks, {mod, name, arity})
+    blocks = if Process.get(:bignum) and System.get_env("NOFUSE") == nil, do: i64fuse_blocks(blocks), else: blocks
+    fimax = i64fused_max_node(blocks)
     idx = blocks |> Enum.with_index() |> Map.new(fn {{l, _}, i} -> {l, i} end)
     entry_idx = Map.fetch!(idx, entry)
     n = length(blocks)
@@ -698,6 +700,7 @@ defmodule Codegen.Emit do
         {:call_ext, _ar, {:extfunc, m, f, a}} -> {["(local.set $x0 (call #{fq(m, f, a)} #{cargs.(a)}))"], false}
         {:call_ext_only, _ar, {:extfunc, m, f, a}} -> {["(return_call #{fq(m, f, a)} #{cargs.(a)})"], true}
         {:call_ext_last, _ar, {:extfunc, m, f, a}, _d} -> {["(return_call #{fq(m, f, a)} #{cargs.(a)})"], true}
+        {:i64fused, plan} -> {emit_i64fused(plan), false}
         {:trmc_cons, h} ->
           {["(local.set $tmpc (struct.new $cons #{val.(h)} (ref.null none)))",
             "(if (ref.is_null (local.get $trmc_tail)) (then (local.set $trmc_head (local.get $tmpc))) (else (struct.set $cons 1 (ref.as_non_null (local.get $trmc_tail)) (local.get $tmpc))))",
@@ -803,6 +806,7 @@ defmodule Codegen.Emit do
         (if maxx >= xstart, do: Enum.map(xstart..maxx, &"    (local $x#{&1} (ref null eq))"), else: []) ++
         (if maxy >= 0, do: Enum.map(0..maxy, &"    (local $y#{&1} (ref null eq))"), else: []) ++
         (if trmc?, do: ["    (local $trmc_head (ref null $cons)) (local $trmc_tail (ref null $cons))"], else: []) ++
+        (if fimax >= 0, do: [Enum.map_join(0..fimax, " ", &"    (local $fi#{&1} i64)")], else: []) ++
         ["    (local $blk i32) (local $tmpc (ref null $cons)) (local $tmp (ref null eq)) (local $midx i32) (local $mn (ref null $mnode))",
          "    (local $boff i32) (local $blen i32) (local $bdst (ref null $bytes)) (local $bsrc (ref null $bytes)) (local $mc (ref null $mctx))",
          "    (local $tmptup (ref null $tuple)) (local $hmod (ref null eq)) (local $hfun (ref null eq)) (local $hargs (ref null eq))"] ++
@@ -1075,6 +1079,278 @@ defmodule Codegen.Emit do
           [line]
       end
     end)
+  end
+
+
+  # ── cross-op unboxing: i64 chain fusion ──
+  # Fuse runs of integer gc_bifs into raw-i64 arithmetic in shadow locals, boxing only the
+  # values that survive the run. Soundness is a small domain lattice per SSA node:
+  #   {:s64, {lo,hi}}  true value, bounds proven ⊆ signed i64 (runtime tier is i31/$i64)
+  #   :u64raw          congruence-class mod 2^64 only (may exceed 64 bits in truth); may flow
+  #                    ONLY through {+,*,band,bor,bxor,bsl} until canonicalized
+  #   :u64             canonical: true value == unsigned 64-bit pattern (after `rem 2^64` or a
+  #                    low-bit mask) — then shr_u / rem_u / bxor read the bits directly
+  # Anything unprovable aborts the run prefix conservatively. Bignum mode only; operands must
+  # carry beam_disasm integer type bounds. (The mod-2^64 PRNG/hash shape — the ledger's host-
+  # BigInt tax — fuses to pure wrapping i64 with ONE box at the end.)
+  @fuse_arith [:+, :-, :*, :band, :bor, :bxor, :bsl, :bsr, :rem]
+  @congruence [:+, :*, :band, :bor, :bxor]
+  @pow64 18_446_744_073_709_551_616
+  @s64_lo -9_223_372_036_854_775_808
+  @s64_hi 9_223_372_036_854_775_807
+
+  def i64fuse_blocks(blocks), do: Enum.map(blocks, fn {l, ops} -> {l, i64fuse_scan(ops)} end)
+
+  defp i64fuse_scan(ops) do
+    case take_run(ops) do
+      {run, rest} when length(run) >= 2 ->
+        case plan_run(run, rest) do
+          # the plan may cover only a PREFIX of the run: the dropped tail ops MUST be re-emitted
+          # (deleting them was the gen_15/gen_19 miscompile genfuzz caught)
+          {:ok, plan, leftover} -> [{:i64fused, plan} | leftover] ++ i64fuse_scan(rest)
+          :no -> emit_unfused(run) ++ i64fuse_scan(rest)
+        end
+      {run, rest} ->
+        emit_unfused(run) ++ (if rest == [], do: [], else: [hd(rest) | i64fuse_scan(tl(rest))])
+    end
+  end
+
+  defp emit_unfused(run), do: run
+
+  # a run: maximal consecutive fusable gc_bifs ({:line,_} dropped inside)
+  defp take_run([{:gc_bif, o, {:f, 0}, _, [_, _], _} = op | rest]) when o in @fuse_arith do
+    {more, rest2} = take_run(Enum.drop_while(rest, &match?({:line, _}, &1)))
+    {[op | more], rest2}
+  end
+  defp take_run(ops), do: {[], ops}
+
+  # plan a run; shrink from the tail until every live-out is materializable. Returns
+  # {:ok, plan, dropped_tail_ops} so the scan re-emits what the plan does not cover, and
+  # liveness for a prefix is judged against the DROPPED ops first (they may read prefix dsts).
+  defp plan_run(run, rest), do: try_plan(run, [], rest)
+
+  defp try_plan(run, _dropped, _rest) when length(run) < 2, do: :no
+  defp try_plan(run, dropped, rest) do
+    case build_plan(run, dead_regs_after(dropped ++ rest)) do
+      {:ok, plan} -> {:ok, plan, dropped}
+      :no -> try_plan(Enum.drop(run, -1), [List.last(run) | dropped], rest)
+    end
+  end
+
+  # regs provably dead after the run: the next op's Live count (gc_bif/test_heap) kills x>=Live
+  defp dead_regs_after([{:test_heap, _, live} | _]), do: {:xdead_from, live}
+  defp dead_regs_after([{:gc_bif, _, _, live, _, _} | _]), do: {:xdead_from, live}
+  defp dead_regs_after(_), do: :none
+
+  defp dead?({:x, i}, {:xdead_from, live}) when i >= live, do: true
+  defp dead?(_, _), do: false
+
+  defp build_plan(run, dead) do
+    init = %{nodes: [], n: 0, regs: %{}}
+    case Enum.reduce_while(run, {:ok, init}, fn {:gc_bif, o, _, _, [a, b], dst}, {:ok, st} ->
+           case fuse_op(o, a, b, dst, st) do
+             {:ok, st2} -> {:cont, {:ok, st2}}
+             :no -> {:halt, :no}
+           end
+         end) do
+      :no -> :no
+      {:ok, st} ->
+        outs =
+          st.regs
+          |> Enum.reject(fn {reg, _} -> dead?(reg, dead) end)
+          |> Enum.map(fn {reg, id} -> {reg, id, node_dom(st, id)} end)
+        if Enum.any?(outs, fn {_, _, d} -> d == :u64raw end) or st.n > 14,
+          do: :no,
+          else: {:ok, %{nodes: Enum.reverse(st.nodes), outs: outs}}
+    end
+  end
+
+  defp node_dom(st, id), do: st.nodes |> Enum.find(fn {i, _, _} -> i == id end) |> elem(1)
+
+  defp add_node(st, dom, src), do: {st.n, %{st | nodes: [{st.n, dom, src} | st.nodes], n: st.n + 1}}
+
+  # resolve an operand to a node (existing chain node, fresh term input, or literal)
+  defp opnode({:integer, v}, st) when v >= @s64_lo and v <= @s64_hi,
+    do: {:ok, add_node(st, {:s64, {v, v}}, {:lit, v})}
+  defp opnode({:integer, _}, _), do: :no
+  defp opnode({:tr, reg, t}, st), do: opnode_reg(reg, t, st)
+  defp opnode(reg, st) when elem(reg, 0) in [:x, :y], do: opnode_reg(reg, :notype, st)
+  defp opnode(_, _), do: :no
+
+  defp opnode_reg(reg, t, st) do
+    case Map.fetch(st.regs, reg) do
+      {:ok, id} -> {:ok, {id, st}}
+      :error ->
+        case t do
+          {:t_integer, {lo, hi}} when is_integer(lo) and is_integer(hi) and lo >= @s64_lo and hi <= @s64_hi ->
+            {:ok, add_node(st, {:s64, {lo, hi}}, {:in_s64, reg})}
+          {:t_integer, {lo, _}} when is_integer(lo) and lo >= 0 ->
+            {:ok, add_node(st, :u64raw, {:in_u64, reg})}
+          _ -> :no
+        end
+    end
+  end
+
+  # `x rem 2^64` short-circuits BEFORE divisor resolution (2^64 doesn't fit s64 as a node;
+  # it isn't a value here, it's the canonicalizer)
+  defp fuse_op(:rem, a, {:integer, @pow64}, dst, st) do
+    with {:ok, {na, st}} <- opnode(a, st),
+         d when d == :u64raw or d == :u64 or (elem(d, 0) == :s64 and elem(elem(d, 1), 0) >= 0) <- node_dom(st, na) do
+      {id, st} = add_node(st, :u64, {:nop, na, na})
+      {:ok, %{st | regs: Map.put(st.regs, dst, id)}}
+    else
+      bad ->
+        if System.get_env("FUSEDBG"), do: IO.inspect({:rem_pow64, a, bad}, label: "FUSE MISS", limit: 12)
+        :no
+    end
+  end
+
+  defp fuse_op(o, a, b, dst, st) do
+    with {:ok, {na, st}} <- opnode(a, st),
+         {:ok, {nb, st}} <- opnode(b, st),
+         {:ok, dom, wop} <- transition(o, node_dom(st, na), node_dom(st, nb), b) do
+      {id, st} = add_node(st, dom, {wop, na, nb})
+      {:ok, %{st | regs: Map.put(st.regs, dst, id)}}
+    else
+      bad ->
+        if System.get_env("FUSEDBG"), do: IO.inspect({o, a, b, bad}, label: "FUSE MISS", limit: 12, width: 140)
+        :no
+    end
+  end
+
+  # ── the lattice ──
+  defp transition(:rem, da, _db, {:integer, @pow64}) do
+    # `x rem 2^64` canonicalizes a nonneg congruence class: identity on the bits
+    case da do
+      {:s64, {lo, _}} when lo >= 0 -> {:ok, :u64, :nop}
+      :u64raw -> {:ok, :u64, :nop}
+      :u64 -> {:ok, :u64, :nop}
+      _ -> :no
+    end
+  end
+  defp transition(:rem, da, db, _b) do
+    # unsigned rem by a positive divisor; dividend must have nonneg true value
+    with true <- nonneg?(da),
+         {:s64, {lo, hi}} when lo >= 1 <- db do
+      {:ok, {:s64, {0, hi - 1}}, :rem_u}
+    else
+      _ -> :no
+    end
+  end
+  defp transition(:bsr, da, {:s64, {k, k}}, _b) when k >= 0 do
+    case da do
+      {:s64, {lo, hi}} when lo >= 0 -> {:ok, {:s64, {Bitwise.bsr(lo, k), Bitwise.bsr(hi, k)}}, :shr_u}
+      :u64 when k >= 1 -> {:ok, {:s64, {0, Bitwise.bsr(@pow64 - 1, k)}}, :shr_u}
+      :u64 -> {:ok, :u64, :nop}
+      _ -> :no
+    end
+  end
+  defp transition(:band, da, {:s64, {m, m}}, _b) when m >= 0 do
+    # low-bit mask reads only low bits: sound even on a congruence class
+    if low_mask?(m) and (match?({:s64, {lo, _}} when lo >= 0, da) or da in [:u64raw, :u64]),
+      do: {:ok, {:s64, {0, m}}, :and},
+      else: band_bounded(da, m)
+  end
+  defp transition(:bsl, da, {:s64, {lo, hi}}, _b) when lo >= 0 and hi <= 63 do
+    # const-bounded shift: stay exact if bounds allow, else congruence (count proven < 64)
+    case da do
+      {:s64, ba} ->
+        case s64_bounds(:bsl_range, ba, {lo, hi}) do
+          {l2, h2} when l2 >= @s64_lo and h2 <= @s64_hi -> {:ok, {:s64, {l2, h2}}, :shl}
+          _ -> if nonneg_b?(ba), do: {:ok, :u64raw, :shl}, else: :no
+        end
+      d when d in [:u64raw, :u64] -> {:ok, :u64raw, :shl}
+      _ -> :no
+    end
+  end
+  defp transition(:bsl, _, _, _), do: :no
+  defp transition(o, {:s64, ba}, {:s64, bb}, _b) when o in [:+, :-, :*, :band, :bor, :bxor] do
+    case s64_bounds(o, ba, bb) do
+      {lo, hi} when lo >= @s64_lo and hi <= @s64_hi -> {:ok, {:s64, {lo, hi}}, s64op(o)}
+      _ ->
+        # overflows signed 64: keep as congruence class when both sides are nonneg
+        if o in @congruence and nonneg_b?(ba) and nonneg_b?(bb), do: {:ok, :u64raw, s64op(o)}, else: :no
+    end
+  end
+  defp transition(o, da, db, _b) when o in [:+, :*, :band, :bor, :bxor] do
+    # mixed/raw congruence arithmetic: stays a congruence class
+    if (da in [:u64raw, :u64] or nonneg?(da)) and (db in [:u64raw, :u64] or nonneg?(db)) do
+      dom = if o == :bxor and canonical?(da) and canonical?(db), do: :u64, else: :u64raw
+      {:ok, dom, s64op(o)}
+    else
+      :no
+    end
+  end
+  defp transition(_, _, _, _), do: :no
+
+  defp band_bounded({:s64, {lo, hi}}, m) when lo >= 0, do: {:ok, {:s64, {0, min(hi, m)}}, :and}
+  defp band_bounded(_, _), do: :no
+
+  defp canonical?(:u64), do: true
+  defp canonical?({:s64, {lo, _}}) when lo >= 0, do: true
+  defp canonical?(_), do: false
+  defp nonneg?({:s64, {lo, _}}) when lo >= 0, do: true
+  defp nonneg?(:u64), do: true
+  defp nonneg?(_), do: false
+  defp nonneg_b?({lo, _}), do: lo >= 0
+  defp low_mask?(m), do: m > 0 and Bitwise.band(m, m + 1) == 0
+
+  defp s64_bounds(:+, {a, b}, {c, d}), do: {a + c, b + d}
+  defp s64_bounds(:-, {a, b}, {c, d}), do: {a - d, b - c}
+  defp s64_bounds(:*, {a, b}, {c, d}) do
+    ps = for x <- [a, b], y <- [c, d], do: x * y
+    {Enum.min(ps), Enum.max(ps)}
+  end
+  defp s64_bounds(:band, {a, b}, {c, d}) when a >= 0 and c >= 0, do: {0, min(b, d)}
+  defp s64_bounds(:bor, {a, b}, {c, d}) when a >= 0 and c >= 0, do: {0, 2 * max(b, d) + 1}
+  defp s64_bounds(:bxor, {a, b}, {c, d}) when a >= 0 and c >= 0, do: {0, 2 * max(b, d) + 1}
+  defp s64_bounds(:bsl_range, {a, b}, {c, d}) when c >= 0 and d <= 63 do
+    vals = for x <- [a, b], k <- [c, d], do: x * Bitwise.bsl(1, k)
+    {Enum.min(vals), Enum.max(vals)}
+  end
+  defp s64_bounds(_, _, _), do: {@s64_lo - 1, @s64_hi + 1}
+
+  defp s64op(:+), do: :add
+  defp s64op(:-), do: :sub
+  defp s64op(:*), do: :mul
+  defp s64op(:band), do: :and
+  defp s64op(:bor), do: :or
+  defp s64op(:bxor), do: :xor
+  defp s64op(:bsl), do: :shl
+
+  # WAT for a fused plan: load inputs into $fiN shadow locals, run raw i64 ops, box live-outs
+  def emit_i64fused(plan) do
+    loads =
+      Enum.flat_map(plan.nodes, fn
+        {id, _, {:lit, v}} -> ["(local.set $fi#{id} (i64.const #{v}))"]
+        {id, _, {:in_s64, reg}} -> ["(local.set $fi#{id} (call $as_i64 #{operand(reg)}))"]
+        {id, _, {:in_u64, reg}} -> ["(local.set $fi#{id} (call $term_u64bits #{operand(reg)}))"]
+        {id, _, {:nop, n1, _}} -> ["(local.set $fi#{id} (local.get $fi#{n1}))"]
+        {id, _, {wop, n1, n2}} -> ["(local.set $fi#{id} (i64.#{wop} (local.get $fi#{n1}) (local.get $fi#{n2})))"]
+      end)
+    stores =
+      Enum.map(plan.outs, fn
+        {reg, id, {:s64, bounds}} ->
+          if fits_i31?(bounds),
+            do: "(local.set $#{rname(reg)} (ref.i31 (i32.wrap_i64 (local.get $fi#{id}))))",
+            else: "(local.set $#{rname(reg)} (call $narrow (local.get $fi#{id})))"
+        {reg, id, :u64} ->
+          "(local.set $#{rname(reg)} (call $narrow_u64 (local.get $fi#{id})))"
+      end)
+    loads ++ stores
+  end
+
+  defp rname({:x, n}), do: "x#{n}"
+  defp rname({:y, n}), do: "y#{n}"
+
+  def i64fused_max_node(blocks) do
+    blocks
+    |> Enum.flat_map(fn {_l, ops} -> ops end)
+    |> Enum.flat_map(fn
+      {:i64fused, plan} -> Enum.map(plan.nodes, &elem(&1, 0))
+      _ -> []
+    end)
+    |> Enum.max(fn -> -1 end)
   end
 
   def shift_y({:y, k}, s), do: {:y, k + s}

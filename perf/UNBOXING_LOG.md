@@ -114,3 +114,21 @@ NEXT (structural, do WITH the user — risk): (1) cross-op unboxing — keep i64
 escapes (the "broad" step; ledger alloc lever). (2) zero-copy sub-binaries (string-parse copy in
 binary_part). (3) flatmap tier for small maps (per-struct alloc). (4) body-recursion Wasm stack cliff.
 Maps confirmed still O(log n) (scaling.exs). Scoreboard: `BENCH=1 elixir <suite>.exs` + perf/run.exs.
+
+## Step 10: CROSS-OP UNBOXING — i64 chain fusion ★★★ THE LEDGER LEVER, CLOSED
+- Block-local fusion of integer gc_bif runs into raw-i64 shadow locals ($fiN), boxing only
+  live-outs. Soundness lattice: {:s64, bounds} (proven signed-64) / :u64raw (congruence class
+  mod 2^64; only +,*,band,bor,bxor; must be consumed in-run) / :u64 (canonical after
+  `rem 2^64` or a low-bit mask — then shr_u/rem_u/bxor read bits directly). Entry from terms
+  via beam_disasm bounds (s64-fit -> $as_i64; {0,+inf} -> $term_u64bits). Materialize: $narrow /
+  $narrow_u64 (i31 / $i64 / $big via big.from_u64). bsl requires shift bounds <= 63 (wasm shl
+  masks the count). NOFUSE=1 kill switch.
+- ledger/500: 1935us -> 122us = **0.3x of BEAM (3.3x FASTER than native)**. Host calls/op
+  205,600 -> 5,640 (36x); big.mul/big.rem GONE — the mod-2^64 PRNG/hash runs as wrapping i64.
+  Honest framing: BEAM heap-allocates bignums for the same 2^64-range values; we exploit the
+  rem-2^64 congruence to stay in machine words. Alloc/op still map/tuple-churn dominated.
+- genfuzz EARNED ITS KEEP: a fresh 40-program universe (GENSEED=11) caught 3 miscompiles in
+  the first lattice draft — (1) fused-prefix planning DELETED the unfused tail ops,
+  (2) prefix liveness judged against the wrong successor, (3) unbounded-variable bsl entered
+  the congruence domain (shl masks at 64). All fixed; 40/40 on two universes + fuzz 33/33 +
+  verify 8/8 after.

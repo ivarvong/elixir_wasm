@@ -252,7 +252,9 @@ defmodule Codegen.Runtime do
       (import "big" "fits_i64"  (func $bigint_fits_i64 (param externref) (result i32)))
       (import "big" "to_i64"    (func $bigint_to_i64 (param externref) (result i64)))
       (import "big" "cmp"       (func $bigint_cmp (param externref externref) (result i32)))
-      (import "big" "bit_length" (func $bigint_bit_length (param externref) (result i32)))#{if Process.get(:float), do: "\n      (import \"big\" \"to_f64\"    (func $bigint_to_f64 (param externref) (result f64)))\n      (import \"big\" \"from_float\" (func $bigint_from_float (param f64) (result externref)))", else: ""}\
+      (import "big" "bit_length" (func $bigint_bit_length (param externref) (result i32)))
+      (import "big" "to_u64"    (func $bigint_to_u64 (param externref) (result i64)))
+      (import "big" "from_u64"  (func $bigint_from_u64 (param i64) (result externref)))#{if Process.get(:float), do: "\n      (import \"big\" \"to_f64\"    (func $bigint_to_f64 (param externref) (result f64)))\n      (import \"big\" \"from_float\" (func $bigint_from_float (param f64) (result externref)))", else: ""}\
     """
   end
 
@@ -285,6 +287,15 @@ defmodule Codegen.Runtime do
         (if (result externref) (call $is_i64rep (local.get $x))
           (then (call $bigint_from_i64 (call $as_i64 (local.get $x))))
           (else (struct.get $big 0 (ref.cast (ref $big) (local.get $x))))))
+      ;; ── i64 chain-fusion support ──
+      ;; any integer tier -> its value's low 64 bits (unsigned congruence class)
+      (func $term_u64bits (param $x (ref null eq)) (result i64)
+        (if (call $is_i64rep (local.get $x)) (then (return (call $as_i64 (local.get $x)))))
+        (call $bigint_to_u64 (struct.get $big 0 (ref.cast (ref $big) (local.get $x)))))
+      ;; canonical unsigned-64 bits -> smallest tier holding the TRUE (unsigned) value
+      (func $narrow_u64 (param $v i64) (result (ref null eq))
+        (if (i64.ge_s (local.get $v) (i64.const 0)) (then (return (call $narrow (local.get $v)))))
+        (call $from_big (call $bigint_from_u64 (local.get $v))))
       (func $narrow (param $v i64) (result (ref null eq))   ;; i64 -> i31 if it fits, else $i64
         (if (result (ref null eq))
             (i32.and (i64.ge_s (local.get $v) (i64.const -1073741824)) (i64.lt_s (local.get $v) (i64.const 1073741824)))

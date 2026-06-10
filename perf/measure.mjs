@@ -36,7 +36,7 @@ const bigRaw = {
   bsl: (a, b) => b >= 0n ? a << b : a >> -b, bsr: (a, b) => b >= 0n ? a >> b : a << -b,
   fits_i31: a => (a >= -1073741824n && a < 1073741824n) ? 1 : 0, to_i32: a => Number(a),
   fits_i64: a => (a >= -9223372036854775808n && a <= 9223372036854775807n) ? 1 : 0, to_i64: a => BigInt.asIntN(64, a),
-  cmp: (a, b) => a < b ? -1 : a > b ? 1 : 0, bit_length: a => a === 0n ? 0 : a.toString(2).length,
+  cmp: (a, b) => a < b ? -1 : a > b ? 1 : 0, to_u64: (a) => BigInt.asIntN(64, a), from_u64: (v) => BigInt.asUintN(64, v), bit_length: a => a === 0n ? 0 : a.toString(2).length,
 };
 const mathRaw = Object.fromEntries(
   ["sin","cos","tan","asin","acos","atan","sqrt","exp","log","log2","log10",

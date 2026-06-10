@@ -37,7 +37,7 @@ const big = {
   fits_i64: (value) => (value >= -9223372036854775808n && value <= 9223372036854775807n ? 1 : 0),
   to_i64: (value) => BigInt.asIntN(64, value),
   cmp: (left, right) => (left < right ? -1 : left > right ? 1 : 0),
-  bit_length: (value) => (value === 0n ? 0 : value.toString(2).length)
+  to_u64: (a) => BigInt.asIntN(64, a), from_u64: (v) => BigInt.asUintN(64, v), bit_length: (value) => (value === 0n ? 0 : value.toString(2).length)
 };
 
 const math = Object.fromEntries(

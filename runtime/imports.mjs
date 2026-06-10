@@ -34,7 +34,7 @@ export const makeBig = () => ({
   fits_i64: (a) => (a >= -9223372036854775808n && a <= 9223372036854775807n ? 1 : 0),
   to_i64: (a) => BigInt.asIntN(64, a),
   cmp: (a, b) => (a < b ? -1 : a > b ? 1 : 0),
-  bit_length: (a) => (a === 0n ? 0 : a.toString(2).length),
+  to_u64: (a) => BigInt.asIntN(64, a), from_u64: (v) => BigInt.asUintN(64, v), bit_length: (a) => (a === 0n ? 0 : a.toString(2).length),
   to_f64: (a) => Number(a),
 });
 
