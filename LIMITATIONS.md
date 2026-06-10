@@ -131,9 +131,18 @@ runtime-variable `receive … after`, per-process reduction budgets, `unique_int
 - `IO.puts/warn/inspect` → host console/stream imports; `IO.stream` over host handles.
 - `application.get_key/2` → static app env; `convert_time_unit` (pure arithmetic).
 
-**Under investigation:** one real divergence — Earmark's `LineScanner` receives a non-binary on
-Wasm where the VM has a binary (differential debugging in progress; this is exactly the class the
-harnesses exist to catch).
+**RESOLVED (the Earmark campaign):** the LineScanner divergence was a real codegen bug —
+`get_map_elements` destination/source register aliasing — now fixed; real Earmark renders
+byte-identical (see `demo/markdown/`). The §3 inventory above has been largely BURNED DOWN: the
+error/raise machinery, term primitives, full Regex surface, dynamic-atom lookups
+(`*_to_existing_atom` over the closed-world table), float→text formatting, the effects ABI, the
+OTP-27 map cursor, and sub-byte bitstring match/construct are all built and verified. The scoreboard
+stands at **296/299 (99.0%)** with nine of ten modules perfect.
+
+**The one remaining representation class:** bitstring VALUES with non-byte bit lengths (a `$binary`
+carrying a bit-length) — what `Float.round/ceil/floor` with precision (52-bit `:binary` segments) and
+gaps p18 (10-bit packed streams) need. A bounded, designed change: add a bit-length field consulted by
+the binary ops; tracked as the next focused piece.
 
 ---
 
