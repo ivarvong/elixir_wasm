@@ -25,6 +25,7 @@ const decoder = new TextDecoder();
 
 const big = {
   from_i64: (value) => value,
+  from_float: (value) => BigInt(Math.trunc(value)),
   from_str: (value) => BigInt(String(value)),
   add: (left, right) => left + right,
   sub: (left, right) => left - right,

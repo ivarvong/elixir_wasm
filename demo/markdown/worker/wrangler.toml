@@ -1,0 +1,15 @@
+# Deploy the compiled-Elixir markdown pipeline to real Cloudflare Workers:
+#
+#   cd worker
+#   elixir smoke.exs            # 1. builds blog.wasm + stages imports.mjs + local workerd gate
+#   npx wrangler deploy         # 2. ship it
+#
+# The same three files workerd served locally are what wrangler ships — no translation step.
+name = "elixir-markdown"
+main = "worker.mjs"
+compatibility_date = "2026-06-01"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true

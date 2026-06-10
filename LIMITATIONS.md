@@ -6,10 +6,13 @@ This document is the canonical line between the two. Everything in §3 is a bug 
 enumerated inventory; only §1 contains legitimate "can't"s, and even most of those have designed
 answers.
 
-Evidence base: the differential harnesses (conformance 161/161, fuzz 33/33, gaps 19/20), the
-20-program gap corpus master list (`gaps/GAPS_FOUND.txt`), and the richest real-world probe so far —
-compiling real Jason + real Earmark + stdlib (149 beams), whose reachable-stub inventory enumerates
-~190 distinct functions (`demo/markdown/_work/blog.wat`).
+Evidence base (all bit-exact vs the VM, one command: `elixir verify.exs`):
+conformance **198/198** · fuzz **33/33** · gaps **20/20 provably correct** · API scoreboard
+**389/389 (100%)** of all 392 public functions of ten stdlib modules (3 remaining are
+`@nondet` — random/shuffle, where equality is not defined) · **genfuzz** (generative random
+programs over the full term algebra) · **regexdiff** (the regex-shim corpus: 76 cases, 0 lies)
+· real unmodified Jason 1.4.5 + Earmark 1.4.49 byte-identical (`demo/markdown`) · File/IO
+effects 3/3 (`demo/effects`).
 
 ---
 
@@ -20,11 +23,17 @@ NIFs and C-implemented BIFs are, by definition, not "non-native code." Each one 
 **shimmed at the host boundary** with equivalent semantics. The *limit* is therefore not "it doesn't
 run" but **shim existence + semantic fidelity**:
 
-- **`:re` (PCRE)** ↔ JS `RegExp`: the shim strategy works (run/2/3, split/3, replace/3 shipped,
-  bit-exact on everything tested), but PCRE has constructs JS lacks (possessive quantifiers,
-  atomic groups, recursion `(?R)`, `\h`/`\R`). Fidelity endgame, if ever needed: compile PCRE2
-  itself to wasm as a linear-memory sidecar (the "no C" decision was about the *runtime term
-  model*, not leaf libraries), or implement a PCRE-compatible engine in Elixir.
+- **`:re` (PCRE)** ↔ JS `RegExp`: the shim boundary is now a MEASURED line — `regexdiff/run.exs`
+  diffs a 76-case corpus (patterns × subjects × the full Regex API) against real PCRE2, with every
+  case classified: **68 exact** (incl. `$`-before-final-newline, `\Z`/`\z`, split semantics with
+  parts/include_captures/empty patterns, lookbehind, backrefs, x-mode, named captures both
+  syntaxes), **4 documented deltas** (PCRE byte-mode without `/u` on non-ASCII subjects; atomic
+  `(?>` when its content must refuse to backtrack; branch-reset `(?|` capture numbering on a
+  later alternative), and **4 honest refusals** (possessive quantifiers, recursion `(?R)`,
+  subroutines `(?1)`, `\K`/`\G` — the shim THROWS rather than mismatching; `\K` would otherwise
+  silently match a literal K in JS). Zero unclassified divergences. Fidelity endgame, if ever
+  needed: compile PCRE2 itself to wasm as a linear-memory sidecar (the "no C" decision was about
+  the *runtime term model*, not leaf libraries), or implement a PCRE-compatible engine in Elixir.
 - **Float→string formatting** (`float_to_binary` et al.): Erlang uses shortest-round-trip (Ryu).
   JS also prints shortest-round-trip but with different formatting conventions at the edges
   (exponent thresholds, `1.0e20` vs `100000000000000000000`). Needs an exact-Erlang-format
@@ -65,6 +74,14 @@ need nothing special.)
 ~15–25k concurrent JSPI processes per isolate (vs BEAM's millions); the reduction budget is
 per-isolate today (per-process budgets are roadmap); one isolate = one thread (parallelism comes
 from many isolates/DOs, like BEAM distribution). These change *capacity*, not correctness.
+
+**The body-recursion stack cliff** (measured): deep non-tail recursion overflows V8's default
+~1MB stack at ~10⁴ frames (the VM handles millions; JSPI stacks do NOT help — same limit,
+measured). Node-side mitigation SHIPPED: `runtime/deepstack.mjs` runs an export in a worker
+thread with `resourceLimits.stackSizeMb` — at 256MB, **5,000,000 frames verified**. On workerd
+the stack is platform-fixed, so the cliff stands there (~10⁴); the forward fix is compiler-level
+trampolining of body recursion (roadmap). Note `--stack-size` beyond the actual OS thread stack
+segfaults rather than raising — use the worker mitigation, not the flag.
 
 ---
 

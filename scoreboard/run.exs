@@ -33,6 +33,107 @@ defmodule Scoreboard do
   @aliases %{"fun1" => "&(&1 * 2)", "fun2" => "fn a, b -> a + b end", "mapset1" => "MapSet.new([1, 2, 3])"}
   # genuinely nondeterministic functions: equal output across runs/impls is not even defined.
   @nondet [random: 1, shuffle: 1, take_random: 2, unique_integer: 0]
+
+  # Explicit calls for functions the generic pools can't reach: specialized fun shapes
+  # ({get, update} funs, {:cont, acc} reducers, sorters, empty fallbacks, chunk steppers),
+  # 4+-arity combos, option atoms, base-N/charlist conversions. Tried FIRST, still VM-validated;
+  # with this table every public roster function is either generated or @nondet — zero unexplained.
+  @special %{
+    {Enum, :chunk, 4} => "Enum.chunk([1,2,3,4,5,6], 2, 3, [0])",
+    {Enum, :chunk_every, 4} => "Enum.chunk_every([1,2,3,4,5,6], 3, 2, [0,0])",
+    {Enum, :chunk_while, 4} =>
+      "Enum.chunk_while(1..10, [], fn x, acc -> if rem(x, 3) == 0, do: {:cont, Enum.reverse([x | acc]), []}, else: {:cont, [x | acc]} end, fn [] -> {:cont, []}; acc -> {:cont, Enum.reverse(acc), []} end)",
+    {Enum, :count_until, 3} => "Enum.count_until([1,2,3,4,5], fn x -> rem(x, 2) == 0 end, 2)",
+    {Enum, :filter_map, 3} => "Enum.filter_map([1,2,3,4], fn x -> rem(x, 2) == 0 end, fn x -> x * 2 end)",
+    {Enum, :find, 3} => "Enum.find([1,2,3], 0, fn x -> x > 10 end)",
+    {Enum, :find_value, 3} => "Enum.find_value([1,2,3], 99, fn x -> x > 2 && x * 10 end)",
+    {Enum, :flat_map, 2} => "Enum.flat_map([1,2,3], fn x -> [x, x * 2] end)",
+    {Enum, :flat_map_reduce, 3} => "Enum.flat_map_reduce([1,2,3], 0, fn x, acc -> {[x, x + 1], acc + x} end)",
+    {Enum, :group_by, 3} => "Enum.group_by([1,2,3,4,5], fn x -> rem(x, 2) end, fn x -> x * 10 end)",
+    {Enum, :into, 3} => "Enum.into([1,2,3], [], fn x -> x * 2 end)",
+    {Enum, :map_intersperse, 3} => "Enum.map_intersperse([1,2,3], 0, fn x -> x * 2 end)",
+    {Enum, :map_join, 3} => ~s|Enum.map_join([1,2,3], ",", fn x -> x * 2 end)|,
+    {Enum, :map_reduce, 3} => "Enum.map_reduce([1,2,3], 0, fn x, acc -> {x * 2, acc + x} end)",
+    {Enum, :max, 2} => "Enum.max([1,2,3], fn a, b -> a >= b end)",
+    {Enum, :max, 3} => "Enum.max([], fn a, b -> a >= b end, fn -> -1 end)",
+    {Enum, :max_by, 3} => "Enum.max_by([1,2,3], fn x -> rem(x, 3) end, fn a, b -> a >= b end)",
+    {Enum, :max_by, 4} => "Enum.max_by([], fn x -> x end, fn a, b -> a >= b end, fn -> -1 end)",
+    {Enum, :min, 2} => "Enum.min([1,2,3], fn a, b -> a <= b end)",
+    {Enum, :min, 3} => "Enum.min([], fn a, b -> a <= b end, fn -> -1 end)",
+    {Enum, :min_by, 3} => "Enum.min_by([1,2,3], fn x -> rem(x, 3) end, fn a, b -> a <= b end)",
+    {Enum, :min_by, 4} => "Enum.min_by([], fn x -> x end, fn a, b -> a <= b end, fn -> -1 end)",
+    {Enum, :min_max, 2} => "Enum.min_max([], fn -> {0, 0} end)",
+    {Enum, :min_max_by, 3} => "Enum.min_max_by([1,2,3], fn x -> rem(x, 3) end, fn a, b -> a < b end)",
+    {Enum, :min_max_by, 4} => "Enum.min_max_by([], fn x -> x end, fn a, b -> a < b end, fn -> {0, 0} end)",
+    {Enum, :reduce_while, 3} =>
+      "Enum.reduce_while(1..100, 0, fn x, acc -> if acc > 10, do: {:halt, acc}, else: {:cont, acc + x} end)",
+    {Enum, :sort, 2} => "Enum.sort([3,1,2,2], :desc)",
+    {Enum, :sort_by, 3} => ~s|Enum.sort_by(["aa", "b", "ccc"], fn s -> byte_size(s) end, :desc)|,
+    {Enum, :zip_reduce, 3} => "Enum.zip_reduce([[1,2],[3,4]], 0, fn [a, b], acc -> acc + a * b end)",
+    {Enum, :zip_reduce, 4} => "Enum.zip_reduce([1,2], [3,4], 0, fn x, y, acc -> acc + x * y end)",
+    {Enum, :zip_with, 2} => "Enum.zip_with([[1,2],[3,4]], fn [a, b] -> a + b end)",
+    {Enum, :zip_with, 3} => "Enum.zip_with([1,2], [3,4], fn a, b -> a + b end)",
+    {List, :keyfind, 4} => "List.keyfind([{:a, 1}, {:b, 2}], :c, 0, :none)",
+    {List, :keyfind!, 3} => "List.keyfind!([{:a, 1}, {:b, 2}], :b, 0)",
+    {List, :keyreplace, 4} => "List.keyreplace([{:a, 1}, {:b, 2}], :a, 0, {:a, 9})",
+    {List, :keysort, 3} => "List.keysort([{2, :b}, {1, :a}], 0, :desc)",
+    {List, :keystore, 4} => "List.keystore([{:a, 1}], :b, 0, {:b, 2})",
+    {List, :myers_difference, 3} =>
+      "List.myers_difference([1,2,3], [1,3,4], fn a, b -> if a == b, do: [a], else: nil end)",
+    {List, :to_float, 1} => ~s|List.to_float(~c"3.14")|,
+    {List, :to_integer, 1} => ~s|List.to_integer(~c"42")|,
+    {List, :to_integer, 2} => ~s|List.to_integer(~c"ff", 16)|,
+    {List, :update_at, 3} => "List.update_at([1,2,3], 1, fn x -> x * 10 end)",
+    {Map, :filter, 2} => "Map.filter(%{a: 1, b: 2, c: 3}, fn {_k, v} -> v > 1 end)",
+    {Map, :get_and_update, 3} => "Map.get_and_update(%{a: 1}, :a, fn v -> {v, (v || 0) + 1} end)",
+    {Map, :get_and_update!, 3} => "Map.get_and_update!(%{a: 1}, :a, fn v -> {v, v + 1} end)",
+    {Map, :get_lazy, 3} => "Map.get_lazy(%{a: 1}, :b, fn -> 99 end)",
+    {Map, :intersect, 3} => "Map.intersect(%{a: 1, b: 2}, %{b: 20, c: 3}, fn _k, v1, v2 -> v1 + v2 end)",
+    {Map, :map, 2} => "Map.map(%{a: 1, b: 2}, fn {_k, v} -> v * 10 end)",
+    {Map, :merge, 3} => "Map.merge(%{a: 1}, %{a: 10, b: 2}, fn _k, v1, v2 -> v1 + v2 end)",
+    {Map, :new, 2} => "Map.new([1, 2], fn x -> {x, x * 2} end)",
+    {Map, :pop_lazy, 3} => "Map.pop_lazy(%{a: 1}, :b, fn -> 99 end)",
+    {Map, :put_new_lazy, 3} => "Map.put_new_lazy(%{a: 1}, :b, fn -> 2 end)",
+    {Map, :reject, 2} => "Map.reject(%{a: 1, b: 2}, fn {_k, v} -> v > 1 end)",
+    {Map, :replace_lazy, 3} => "Map.replace_lazy(%{a: 1}, :a, fn v -> v * 10 end)",
+    {Map, :split_with, 2} => "Map.split_with(%{a: 1, b: 2}, fn {_k, v} -> v > 1 end)",
+    {Map, :update, 4} => "Map.update(%{a: 1}, :b, 0, fn v -> v + 1 end)",
+    {Map, :update!, 3} => "Map.update!(%{a: 1}, :a, fn v -> v + 1 end)",
+    {Keyword, :filter, 2} => "Keyword.filter([a: 1, b: 2, c: 3], fn {_k, v} -> v > 1 end)",
+    {Keyword, :get_and_update, 3} => "Keyword.get_and_update([a: 1], :a, fn v -> {v, (v || 0) + 1} end)",
+    {Keyword, :get_and_update!, 3} => "Keyword.get_and_update!([a: 1], :a, fn v -> {v, v + 1} end)",
+    {Keyword, :get_lazy, 3} => "Keyword.get_lazy([a: 1], :b, fn -> 99 end)",
+    {Keyword, :intersect, 3} => "Keyword.intersect([a: 1, b: 2], [b: 20, c: 3], fn _k, v1, v2 -> v1 + v2 end)",
+    {Keyword, :map, 2} => "Keyword.map([a: 1, b: 2], fn {_k, v} -> v * 10 end)",
+    {Keyword, :merge, 3} => "Keyword.merge([a: 1], [a: 10, b: 2], fn _k, v1, v2 -> v1 + v2 end)",
+    {Keyword, :new, 2} => "Keyword.new([:a, :b], fn x -> {x, 1} end)",
+    {Keyword, :pop_lazy, 3} => "Keyword.pop_lazy([a: 1], :b, fn -> 99 end)",
+    {Keyword, :put_new_lazy, 3} => "Keyword.put_new_lazy([a: 1], :b, fn -> 2 end)",
+    {Keyword, :reject, 2} => "Keyword.reject([a: 1, b: 2], fn {_k, v} -> v > 1 end)",
+    {Keyword, :replace, 3} => "Keyword.replace([a: 1, b: 2], :a, 9)",
+    {Keyword, :replace!, 3} => "Keyword.replace!([a: 1, b: 2], :a, 9)",
+    {Keyword, :replace_lazy, 3} => "Keyword.replace_lazy([a: 1], :a, fn v -> v * 10 end)",
+    {Keyword, :split_with, 2} => "Keyword.split_with([a: 1, b: 2], fn {_k, v} -> v > 1 end)",
+    {Keyword, :update, 4} => "Keyword.update([a: 1], :b, 0, fn v -> v + 1 end)",
+    {Keyword, :update!, 3} => "Keyword.update!([a: 1], :a, fn v -> v + 1 end)",
+    {Tuple, :insert_at, 3} => "Tuple.insert_at({1, 2}, 1, :x)",
+    {String, :chunk, 2} => ~s|String.chunk(<<"ab", 0, "cd">>, :valid)|,
+    {String, :downcase, 2} => ~s|String.downcase("ÉLIXIR Ab", :default)|,
+    {String, :match?, 2} => ~s|String.match?("abc123", ~r/\\d+/)|,
+    {String, :normalize, 2} => ~s|String.normalize("noe\\u0308l", :nfc)|,
+    {String, :replace, 4} => ~s|String.replace("a,b,c", ",", "-", global: false)|,
+    {String, :to_float, 1} => ~s|String.to_float("3.14")|,
+    {String, :to_integer, 1} => ~s|String.to_integer("42")|,
+    {String, :to_integer, 2} => ~s|String.to_integer("ff", 16)|,
+    {String, :upcase, 2} => ~s|String.upcase("héllo", :default)|,
+    {String, :valid?, 2} => ~s|String.valid?("abc", :fast_ascii)|,
+    {Range, :__struct__, 1} => "Range.__struct__(first: 1, last: 5, step: 2)",
+    {Range, :new, 3} => "Range.new(1, 10, 2)",
+    {Float, :max_finite, 0} => "Float.max_finite()",
+    {Float, :min_finite, 0} => "Float.min_finite()",
+    {Float, :to_char_list, 2} => "Float.to_char_list(3.14159, decimals: 3)",
+    {Float, :to_string, 2} => "Float.to_string(3.14159, decimals: 3)"
+  }
   # results whose ORDER is unspecified by the language when derived from map iteration (the documented
   # map-order delta, LIMITATIONS §2): normalize by sorting before checksumming — both sides identically.
   @sort_result %{{Map, :keys, 1} => :sort, {Map, :values, 1} => :sort, {Map, :to_list, 1} => :sort,
@@ -67,8 +168,10 @@ defmodule Scoreboard do
     fns = mod.__info__(:functions) |> Enum.sort()
     cases = fns |> Enum.map(fn {f, a} -> {f, a, (if {f, a} in @nondet, do: nil, else: gen_call(mod, f, a))} end)
     gen = Enum.filter(cases, fn {_, _, c} -> c != nil end)
+    nogen_fns = for {f, a, nil} <- cases, {f, a} not in @nondet, do: "#{f}/#{a}"
     nogen = Enum.count(cases, fn {_, _, c} -> c == nil end)
     IO.puts("  #{inspect(mod)}: #{length(fns)} public fns, #{length(gen)} generated, #{nogen} nogen")
+    unless nogen_fns == [], do: IO.puts("     nogen: #{Enum.join(nogen_fns, " ")}")
 
     {wasmf, watf, wrapper_mod} = build(mod, gen)
     vm = Enum.with_index(gen) |> Enum.map(fn {_, i} -> vm_case(wrapper_mod, i) end)
@@ -83,11 +186,16 @@ defmodule Scoreboard do
     {mod, pass, fail, nogen, length(fns), details}
   end
 
-  # try candidate arg combos on the VM; the first whose call + checksum succeeds wins.
+  # try candidate calls on the VM; the first whose call + checksum succeeds wins.
+  # @special calls go first (handwritten, idiomatic); the generic typed pools are the fallback.
   defp gen_call(mod, f, a) do
-    candidates(a)
-    |> Enum.find_value(fn args_src ->
-      call = "#{inspect(mod)}.#{f}(#{Enum.join(args_src, ", ")})"
+    special = case Map.get(@special, {mod, f, a}) do
+      nil -> []
+      call -> [call]
+    end
+    generic = Enum.map(candidates(a), fn args_src -> "#{inspect(mod)}.#{f}(#{Enum.join(args_src, ", ")})" end)
+    (special ++ generic)
+    |> Enum.find_value(fn call ->
       probe = "Scoreboard.Chk.chk(#{call})"
       task = Task.async(fn ->
         try do
@@ -191,6 +299,7 @@ defmodule Scoreboard do
     """
       def chk(x), do: ch(x, 17)
       defp ch(x, a) when is_integer(x), do: rem(a * 131 + rem(x, 1_000_000_007) + 1_000_000_007, 1_000_000_007)
+      defp ch(x, a) when is_float(x) and (x > 1.0e15 or x < -1.0e15), do: ch(trunc(x), a + 3)
       defp ch(x, a) when is_float(x), do: ch(trunc(x * 1_000_000), a + 3)
       defp ch(true, a), do: a + 11
       defp ch(false, a), do: a + 13
@@ -239,6 +348,7 @@ defmodule Scoreboard.Chk do
   # VM-side probe checksum: identical semantics to the compiled chk (defined directly here).
   def chk(x), do: ch(x, 17)
   defp ch(x, a) when is_integer(x), do: rem(a * 131 + rem(x, 1_000_000_007) + 1_000_000_007, 1_000_000_007)
+  defp ch(x, a) when is_float(x) and (x > 1.0e15 or x < -1.0e15), do: ch(trunc(x), a + 3)
   defp ch(x, a) when is_float(x), do: ch(trunc(x * 1_000_000), a + 3)
   defp ch(true, a), do: a + 11
   defp ch(false, a), do: a + 13

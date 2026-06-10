@@ -22,7 +22,7 @@ if (args[0] === "--child") {
   const OPS_PASSES = Number(opsStr);
   const encU = new TextEncoder(), decU = new TextDecoder();
   const big = {
-    from_i64: x => x, from_str: x => BigInt(String(x)),
+    from_i64: x => x, from_float: (x) => BigInt(Math.trunc(x)), from_str: x => BigInt(String(x)),
     add: (a, b) => a + b, sub: (a, b) => a - b, mul: (a, b) => a * b, div: (a, b) => a / b, rem: (a, b) => a % b,
     band: (a, b) => a & b, bor: (a, b) => a | b, bxor: (a, b) => a ^ b,
     bsl: (a, b) => b >= 0n ? a << b : a >> -b, bsr: (a, b) => b >= 0n ? a >> b : a << -b,

@@ -252,7 +252,22 @@ defmodule Codegen.Runtime do
       (import "big" "fits_i64"  (func $bigint_fits_i64 (param externref) (result i32)))
       (import "big" "to_i64"    (func $bigint_to_i64 (param externref) (result i64)))
       (import "big" "cmp"       (func $bigint_cmp (param externref externref) (result i32)))
-      (import "big" "bit_length" (func $bigint_bit_length (param externref) (result i32)))#{if Process.get(:float), do: "\n      (import \"big\" \"to_f64\"    (func $bigint_to_f64 (param externref) (result f64)))", else: ""}\
+      (import "big" "bit_length" (func $bigint_bit_length (param externref) (result i32)))#{if Process.get(:float), do: "\n      (import \"big\" \"to_f64\"    (func $bigint_to_f64 (param externref) (result f64)))\n      (import \"big\" \"from_float\" (func $bigint_from_float (param f64) (result externref)))", else: ""}\
+    """
+  end
+
+  # float -> integer (trunc semantics) across ALL tiers: i64-fitting floats convert in Wasm;
+  # finite floats past 2^63 go to the host for an exact bignum (the VM produces a bignum there,
+  # e.g. trunc(Float.max_finite())); NaN/±inf trap honestly (badarith on the VM).
+  def f64_to_int_helper do
+    """
+      (func $f64_to_int (param $x f64) (result (ref null eq))
+        (if (f64.ne (local.get $x) (local.get $x)) (then (unreachable)))
+        (if (i32.and (f64.lt (local.get $x) (f64.const 9223372036854775808))
+                     (f64.ge (local.get $x) (f64.const -9223372036854775808)))
+          (then (return (call $narrow (i64.trunc_f64_s (local.get $x))))))
+        (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (unreachable)))
+        (call $from_big (call $bigint_from_float (local.get $x))))
     """
   end
 
@@ -327,6 +342,10 @@ defmodule Codegen.Runtime do
             (else (call $from_big (call $bigint_mul (call $to_big (local.get $a)) (call $to_big (local.get $b)))))))))
       (func $int_div (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq))
         (local $ia i64) (local $ib i64)
+        ;; every tier canonicalizes integer 0 to i31 0, so one ref.eq covers them all. Raises a
+        ;; CATCHABLE :badarith (rescue ArithmeticError) like the VM — not a hard Wasm trap.
+        (if (ref.eq (local.get $b) (ref.i31 (i32.const 0)))
+          (then (drop (call $erlang.error_1 (global.get $atom_badarith))) (unreachable)))
         (if (result (ref null eq)) (i32.and (ref.test (ref i31) (local.get $a)) (ref.test (ref i31) (local.get $b)))
           (then (call $narrow (i64.div_s (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $a)))) (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $b)))))))
           (else (if (result (ref null eq)) (i32.and (call $is_i64rep (local.get $a)) (call $is_i64rep (local.get $b)))
@@ -337,6 +356,8 @@ defmodule Codegen.Runtime do
                 (else (call $narrow (i64.div_s (local.get $ia) (local.get $ib))))))
             (else (call $from_big (call $bigint_div (call $to_big (local.get $a)) (call $to_big (local.get $b)))))))))
       (func $int_rem (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq))
+        (if (ref.eq (local.get $b) (ref.i31 (i32.const 0)))
+          (then (drop (call $erlang.error_1 (global.get $atom_badarith))) (unreachable)))
         (if (result (ref null eq)) (i32.and (ref.test (ref i31) (local.get $a)) (ref.test (ref i31) (local.get $b)))
           (then (call $narrow (i64.rem_s (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $a)))) (i64.extend_i32_s (i31.get_s (ref.cast (ref i31) (local.get $b)))))))
           (else (if (result (ref null eq)) (i32.and (call $is_i64rep (local.get $a)) (call $is_i64rep (local.get $b)))

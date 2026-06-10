@@ -1,5 +1,5 @@
 import fs from "node:fs";
-const big = { from_i64:(x)=>x, add:(a,b)=>a+b, sub:(a,b)=>a-b, mul:(a,b)=>a*b,
+const big = { from_i64:(x)=>x, from_float:(x)=>BigInt(Math.trunc(x)), add:(a,b)=>a+b, sub:(a,b)=>a-b, mul:(a,b)=>a*b,
               fits_i31:(a)=>(a>=-1073741824n && a<1073741824n)?1:0, to_i32:(a)=>Number(a) };
 const e=(await WebAssembly.instantiate(new Uint8Array(fs.readFileSync("smoke_big.wasm")),{big})).instance.exports;
 const oracle = { 12:"479001600", 13:"6227020800", 20:"2432902008176640000", 21:"51090942171709440000",

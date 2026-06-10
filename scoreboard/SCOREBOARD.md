@@ -5,17 +5,17 @@ concrete call is generated from a typed input pool (VM-validated); the SAME call
 on WasmGC and on the Elixir VM, results folded through an identical checksum and diffed.
 `nogen` = no candidate input matched yet (a harness gap, not a runtime failure).
 
-**TOTAL: 299/299 bit-exact (100.0%) · 93 not yet generated · 392 public functions**
+**TOTAL: 389/389 bit-exact (100.0%) · 3 not yet generated · 392 public functions**
 
 | Module | bit-exact | nogen | public fns | failing |
 |--------|-----------|-------|------------|---------|
-| Enum | 77/77 | 35 | 112 |  |
-| List | 32/32 | 10 | 42 |  |
-| Map | 27/27 | 15 | 42 |  |
-| Keyword | 34/34 | 16 | 50 |  |
-| Tuple | 6/6 | 1 | 7 |  |
+| Enum | 109/109 | 3 | 112 |  |
+| List | 42/42 | 0 | 42 |  |
+| Map | 42/42 | 0 | 42 |  |
+| Keyword | 50/50 | 0 | 50 |  |
+| Tuple | 7/7 | 0 | 7 |  |
 | Integer | 17/17 | 0 | 17 |  |
-| String | 66/66 | 10 | 76 |  |
-| Range | 8/8 | 2 | 10 |  |
+| String | 76/76 | 0 | 76 |  |
+| Range | 10/10 | 0 | 10 |  |
 | MapSet | 20/20 | 0 | 20 |  |
-| Float | 12/12 | 4 | 16 |  |
+| Float | 16/16 | 0 | 16 |  |

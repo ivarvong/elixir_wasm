@@ -19,6 +19,8 @@ defmodule VsJs do
     File.mkdir_p!(@tmp)
     {_, 0} = System.cmd("mix", ["compile"], cd: @app, stderr_to_stdout: true, env: [{"MIX_ENV", "dev"}])
     wasmf = build_wasm()
+    # worker/smoke.exs reuses this build (render + render_md exports) without the JS bench
+    if System.get_env("BUILD_ONLY"), do: exit(:normal)
     doc = Path.join(@vsjs, "doc.md")
     expected = vm_expected(doc)
     vm_us = vm_bench(doc)

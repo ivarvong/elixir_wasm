@@ -124,6 +124,13 @@ defmodule Codegen.Emit do
         {:bif, :tl, _f, [a], d} -> {[set.(d, "(struct.get $cons 1 (ref.cast (ref $cons) #{val.(a)}))")], false}
         {:gc_bif, :map_size, _f, _l, [a], d} ->
           {[set.(d, "(ref.i31 (call $map_size #{val.(a)}))")], false}
+        {:bif, :map_get, {:f, f}, [key, m], d} when f != 0 ->
+          # GUARD context (e.g. `rescue ArithmeticError` testing map_get(:__struct__, reason) on an
+          # atom reason): a non-map subject or missing key FAILS the guard — it must never trap.
+          {["(if (i32.eqz (ref.test (ref $map) #{val.(m)})) (then #{jump.(f)}))",
+            "(local.set $mn (call $map_get #{val.(m)} #{val.(key)}))",
+            "(if (ref.is_null (local.get $mn)) (then #{jump.(f)}))",
+            set.(d, "(struct.get $mnode 1 (ref.as_non_null (local.get $mn)))")], false}
         {:bif, :map_get, _f, [key, m], d} ->
           {["(local.set $mn (call $map_get #{val.(m)} #{val.(key)}))",
             set.(d, "(struct.get $mnode 1 (ref.as_non_null (local.get $mn)))")], false}
@@ -873,11 +880,12 @@ defmodule Codegen.Emit do
   def i64val(reg), do: "(i64.extend_i32_s (i31.get_s (ref.cast (ref i31) #{operand(reg)})))"
 
 
-  # f64 expression -> integer term. In bignum mode use the i64 tier ($narrow boxes to i31/$i64; traps
-  # honestly past 2^63 rather than producing a wrong i32-truncated value). Otherwise the i32 fast path.
+  # f64 expression -> integer term. In bignum mode the $f64_to_int helper covers ALL tiers
+  # (i64-fitting in Wasm, finite >2^63 -> exact host bignum, NaN/inf -> honest trap), matching
+  # the VM (trunc(Float.max_finite()) is a bignum). Otherwise the i32 fast path.
   def f64_to_int(fexpr) do
     if Process.get(:bignum),
-      do: "(call $narrow (i64.trunc_f64_s #{fexpr}))",
+      do: "(call $f64_to_int #{fexpr})",
       else: "(ref.i31 (i32.trunc_f64_s #{fexpr}))"
   end
 
@@ -1192,8 +1200,13 @@ defmodule Codegen.Emit do
   # balanced tree (nested struct.new $mnode — a valid global initializer). Otherwise the literal would
   # be re-materialized (a full tree rebuild) at every use site — e.g. `Map.get(@prices, sku)` would
   # rebuild @prices on every lookup. (Was the dominant cost in the realistic/decimal workloads.)
-  def materialize(m) when is_map(m) and map_size(m) > 0, do: hoist_const(m, fn -> const_map_expr(m) end)
+  def materialize(m) when is_map(m) and map_size(m) > 0 do
+    # a >i64 integer anywhere inside materializes via host bigint CALLS — not a valid Wasm
+    # constant expression, so such a literal must be built inline at the use site, not hoisted.
+    if const_exprable?(m), do: hoist_const(m, fn -> const_map_expr(m) end), else: const_map_expr(m)
+  end
   def materialize(m) when is_map(m), do: "(struct.new $map (ref.null $mnode))"
+
   def materialize([h | t]), do: "(struct.new $cons #{materialize(h)} #{materialize(t)})"
   def materialize(t) when is_tuple(t) do
     elems = Tuple.to_list(t)
@@ -1211,6 +1224,14 @@ defmodule Codegen.Emit do
       raise("materialize: #{inspect(other)}")
     end
   end
+
+  def const_exprable?(n) when is_integer(n),
+    do: not Process.get(:bignum) or (n >= -9_223_372_036_854_775_808 and n <= 9_223_372_036_854_775_807)
+  # NB: Map.to_list, not Enum — struct literals (%Earmark.Options{}) have no Enumerable impl
+  def const_exprable?(m) when is_map(m), do: m |> Map.to_list() |> Enum.all?(fn {k, v} -> const_exprable?(k) and const_exprable?(v) end)
+  def const_exprable?([h | t]), do: const_exprable?(h) and const_exprable?(t)
+  def const_exprable?(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.all?(&const_exprable?/1)
+  def const_exprable?(_), do: true
 
   def const_map_expr(m) do
     pairs = Map.to_list(m) |> Enum.sort()    # Erlang term order (Elixir's default sort) = tree order

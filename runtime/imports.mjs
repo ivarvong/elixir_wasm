@@ -17,7 +17,7 @@
 // Exact arbitrary-precision integers (BIGNUM mode): the $big box wraps a host BigInt. Provided
 // unconditionally — a module that doesn't import "big" simply ignores the extra import object.
 export const makeBig = () => ({
-  from_i64: (x) => x,
+  from_i64: (x) => x, from_float: (x) => BigInt(Math.trunc(x)),
   from_str: (x) => BigInt(String(x)),
   add: (a, b) => a + b,
   sub: (a, b) => a - b,
@@ -101,8 +101,36 @@ export const makeStr = (getExports) => {
       }
       s = out;
     }
+    // \K (match-start reset) and \G (previous-match anchor) have NO JS equivalent — and JS would
+    // silently treat them as literal K/G (a wrong-value lie, not an error). Refuse honestly.
+    {
+      let inClass = false;
+      for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === "\\") {
+          const n = s[i + 1];
+          if (!inClass && (n === "K" || n === "G")) throw new Error(`unsupported PCRE \\${n} (no JS equivalent)`);
+        i++; continue;
+        }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+      }
+    }
+    // PCRE's bare $ (and \Z) match before a FINAL newline; JS $ is absolute end. Rewrite unescaped
+    // $ outside character classes to (?=\n?$) in non-multiline mode (with m both engines agree).
+    if (!flags.includes("m")) {
+      let out = "", inClass = false;
+      for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === "\\") { out += c + (s[i + 1] ?? ""); i++; continue; }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        out += (c === "$" && !inClass) ? "(?=\\n?$)" : c;
+      }
+      s = out;
+    }
     s = s.replace(/\(\?'([^']+)'/g, "(?<$1>");
-    s = s.replace(/\\A/g, "^").replace(/\\z/g, "$").replace(/\\Z/g, "$");
+    s = s.replace(/\\A/g, "^").replace(/\\z/g, "$").replace(/\\Z/g, "(?=\\n?$)");
     s = s.replace(/\\h/g, "[ \\t]").replace(/\\R/g, "(?:\\r\\n|\\r|\\n)");
     s = s.replace(/\\#/g, "#").replace(/\\ /g, " ");   // PCRE x-mode escapes JS rejects
     // PCRE branch-reset (?|...) -> (?:...). Exact when the FIRST alternative participates (shared
@@ -129,9 +157,24 @@ export const makeStr = (getExports) => {
     return re;
   };
 
-  // Regex.split -> JS .split. Frame parts as <<count:32, (len:32, bytes)...>> big-endian.
-  const re_split = (patB, optsB, subjB) => {
-    const parts = rdBin(subjB).split(jsre(patB, optsB));
+  // Regex.split via an exec loop — NOT JS .split(), which (a) injects capture-group text into the
+  // result and (b) drops the leading/trailing empty parts :re.split keeps. `partsLimit` (0 =
+  // unlimited) caps the part count with the remainder UNSPLIT (Regex.split parts:); `incCaps`
+  // interleaves the matched text (Regex.split include_captures:). Frame parts as
+  // <<count:32, (len:32, bytes)...>> big-endian.
+  const re_split = (patB, optsB, subjB, partsLimit = 0, incCaps = 0) => {
+    const re = jsre(patB, optsB, "g");
+    const s = rdBin(subjB);
+    const parts = [];
+    let last = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      if (partsLimit > 0 && parts.length >= (incCaps ? 2 : 1) * (partsLimit - 1)) break;
+      parts.push(s.slice(last, m.index));
+      if (incCaps) parts.push(m[0]);
+      last = m.index + m[0].length;
+      if (m[0] === "") re.lastIndex++;        // zero-width match: step forward
+    }
+    parts.push(s.slice(last));
     const chunks = parts.map((p) => encU.encode(p));
     const total = 4 + chunks.reduce((s, c) => s + 4 + c.length, 0);
     const buf = new Uint8Array(total);
@@ -255,6 +298,25 @@ export const makeStr = (getExports) => {
     return wrBytes(buf);
   };
 
+  // Regex.named_captures/2: all NAMED groups of the first match, non-participating -> "".
+  // Frame: <<matched:8, count:32, (klen:32, kbytes, vlen:32, vbytes)...>> big-endian.
+  const re_named = (patB, optsB, subjB) => {
+    const m = rdBin(subjB).match(jsre(patB, optsB));
+    if (!m) return wrBytes(new Uint8Array([0]));
+    const pairs = Object.entries(m.groups ?? {}).map(([k, v]) => [encU.encode(k), encU.encode(v ?? "")]);
+    const total = 5 + pairs.reduce((s, [k, v]) => s + 8 + k.length + v.length, 0);
+    const buf = new Uint8Array(total);
+    const dv = new DataView(buf.buffer);
+    buf[0] = 1;
+    dv.setUint32(1, pairs.length);
+    let o = 5;
+    for (const [k, v] of pairs) {
+      dv.setUint32(o, k.length); o += 4; buf.set(k, o); o += k.length;
+      dv.setUint32(o, v.length); o += 4; buf.set(v, o); o += v.length;
+    }
+    return wrBytes(buf);
+  };
+
   // Regex.escape/1 — Elixir's exact escape set: regex metachars, backslash, and whitespace,
   // each prefixed with a backslash (the whitespace char itself is kept, prefixed).
   const re_escape = (b) => wrBin(rdBin(b).replace(/[.^$*+?()[\]{}|#\\\s-]/g, (c) => "\\" + c));
@@ -275,6 +337,7 @@ export const makeStr = (getExports) => {
     re_test,
     re_scan,
     re_escape,
+    re_named,
     // :unicode NF* normalization — JS .normalize uses the same Unicode tables
     nfc: (b) => wrBin(rdBin(b).normalize("NFC")),
     nfd: (b) => wrBin(rdBin(b).normalize("NFD")),

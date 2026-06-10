@@ -26,14 +26,18 @@ When a real pure-Elixir program traps on an unsupported function or compiler gap
   completing the shim.
 
 ## Always verify
-Every change is proven bit-exact vs the VM and kept suite-safe. Run after any change:
+Every change is proven bit-exact vs the VM and kept suite-safe. ONE command runs the whole
+manifest with pinned floors (exit 1 on any drop):
 ```
-cd conformance && elixir run.exs     # expect 161/161 (or higher)
-cd fuzz        && elixir run.exs     # expect 33/33
-cd gaps        && elixir run.exs     # expect 19/20 provably correct, 0 lies
+elixir verify.exs        # conformance 198/198 · fuzz 33/33 · gaps 20/20 · genfuzz 12/12 ·
+                         # regexdiff 0 lies · scoreboard 389/389 · markdown 3/3 · effects — ~2.5 min
+elixir verify.exs fast   # skips the slow suites (scoreboard, markdown)
 ```
-Pin the toolchain Node for faithful diffs: `export NODE=/Users/ivar/.nvm/versions/node/v24.16.0/bin/node`
-(or rely on `tooling.exs` auto-discovery of the 24.x line).
+Suites can still be run individually (`cd conformance && elixir run.exs` etc.). When a suite
+GROWS, raise its floor in verify.exs as part of the change. Pin the toolchain Node for faithful
+diffs: `export NODE=/Users/ivar/.nvm/versions/node/v24.16.0/bin/node` (or rely on `tooling.exs`
+auto-discovery of the 24.x line). The workerd prod gate is separate:
+`cd demo/markdown/worker && elixir smoke.exs` (byte-identical over HTTP on Cloudflare's runtime).
 
 ## Compiler layout
 `compiler/beam2wasm.exs` is a thin CLI shim over the library in `compiler/lib/`:

@@ -1,7 +1,7 @@
 // Run the compiled-Elixir Jason encoder (WasmGC) and print each result.
 //   node --stack-trace-limit=20 run.mjs        (node 24+, for Wasm exceptions)
 import { readFileSync } from "node:fs";
-const big = { from_i64:x=>x, add:(a,b)=>a+b, sub:(a,b)=>a-b, mul:(a,b)=>a*b,
+const big = { from_i64:x=>x, from_float:x=>BigInt(Math.trunc(x)), add:(a,b)=>a+b, sub:(a,b)=>a-b, mul:(a,b)=>a*b,
   fits_i31:a=>(a>=-1073741824n&&a<1073741824n)?1:0, to_i32:a=>Number(a), cmp:(a,b)=>a<b?-1:a>b?1:0 };
 const math = Object.fromEntries(["sin","cos","tan","asin","acos","atan","sqrt","exp","log",
   "log2","log10","sinh","cosh","tanh","ceil","floor","atan2","pow"].map(k=>[k,Math[k]]));

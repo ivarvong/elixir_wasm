@@ -8,6 +8,7 @@ defmodule Beam2Wasm do
 
   import Codegen.Emit
   def run(beam_paths) do
+    beam_paths = consolidate_protocols(beam_paths)
     parsed = Enum.map(beam_paths, fn p ->
       {:beam_file, mod, _exp, _attr, _info, fns} = :beam_disasm.file(String.to_charlist(p))
       {mod, fns}
@@ -171,7 +172,7 @@ defmodule Beam2Wasm do
         match?({_, _, {:extfunc, :crypto, :hash, 2}}, op) or match?({_, _, {:extfunc, :crypto, :hash, 2}, _}, op)
       end)
     end)
-    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :trim_all, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :__struct__, Regex,
+    forced = [nil, true, false, :ok, :error, :undefined, :current_stacktrace, :none, :global, :nomatch, :trim, :trim_all, :parts, :include_captures, :infinity, :module, :source, :opts, :unix, :linux, :return, :index, :badkey, :badarith, :__struct__, Regex,
               :caseless, :multiline, :dotall, :extended, :unicode, :enoent, :eacces, :eio, :badarg, :short, :decimals, :compact, :undef, :utf8, :latin1] ++
              (if http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
              (if req_in_user, do: [:__struct__, Req.Response, :status, :headers, :body, :trailers, :private], else: []) ++ if(proc, do: [:EXIT, :normal, :DOWN, :process, :"nonode@nohost", :link, :monitor], else: []) ++
@@ -226,8 +227,8 @@ defmodule Beam2Wasm do
     # the rest of the Regex surface: match?/2, scan/2, escape/1, split/2, compile/1, compile!/1,2
     regex_more? = Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
       Enum.any?(is, fn op ->
-        match?({_, _, {:extfunc, Regex, f, a}} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}], op) or
-          match?({_, _, {:extfunc, Regex, f, a}, _} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}], op)
+        match?({_, _, {:extfunc, Regex, f, a}} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}, {:named_captures, 2}], op) or
+          match?({_, _, {:extfunc, Regex, f, a}, _} when {f, a} in [{:match?, 2}, {:scan, 2}, {:escape, 1}, {:split, 2}, {:compile, 1}, {:compile!, 1}, {:compile!, 2}, {:named_captures, 2}], op)
       end)
     end)
     # run/2 shim is also needed when run/3 is used (run/3 delegates to it for the non-index path);
@@ -317,7 +318,7 @@ defmodule Beam2Wasm do
       (if regex_replace3?, do: [{Regex, :replace, 3}, {Regex, :replace, 4}], else: []) ++
       (if regex_more?,
          do: [{Regex, :match?, 2}, {Regex, :scan, 2}, {Regex, :escape, 1}, {Regex, :split, 2},
-              {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}],
+              {Regex, :compile, 1}, {Regex, :compile!, 1}, {Regex, :compile!, 2}, {Regex, :named_captures, 2}],
          else: []) ++
       (if fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
       (if fltfmt?,
@@ -380,11 +381,11 @@ defmodule Beam2Wasm do
       if(bignum, do: bignum_imports(), else: ""),
       if(flt, do: float_imports(user), else: ""),
       if(strcase?, do: "  (import \"str\" \"upcase\" (func $host_str_upcase (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"downcase\" (func $host_str_downcase (param (ref null eq)) (result (ref null eq))))", else: ""),
-      if(regex_split?, do: "  (import \"str\" \"re_split\" (func $host_re_split (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_split?, do: "  (import \"str\" \"re_split\" (func $host_re_split (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (param i32) (result (ref null eq))))", else: ""),
       if(regex_run?, do: "  (import \"str\" \"re_run\" (func $host_re_run (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(regex_run3?, do: "  (import \"str\" \"re_run_index\" (func $host_re_run_index (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(regex_replace3?, do: "  (import \"str\" \"re_replace\" (func $host_re_replace (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))\n  (import \"str\" \"re_replace_fun\" (func $host_re_replace_fun (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result (ref null eq))))", else: ""),
-      if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))", else: ""),
+      if(regex_more?, do: "  (import \"str\" \"re_test\" (func $host_re_test (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result i32)))\n  (import \"str\" \"re_scan\" (func $host_re_scan (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_escape\" (func $host_re_escape (param (ref null eq)) (result (ref null eq))))\n  (import \"str\" \"re_named\" (func $host_re_named (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))", else: ""),
       if(fs?, do: "  (import \"fs\" \"read_file\" (func $host_fs_read (param (ref null eq)) (result (ref null eq))))\n  (import \"fs\" \"write_file\" (func $host_fs_write (param (ref null eq)) (param (ref null eq)) (result i32)))", else: ""),
       if(io?, do: "  (import \"io\" \"puts\" (func $host_io_puts (param (ref null eq)) (result i32)))\n  (import \"io\" \"warn\" (func $host_io_warn (param (ref null eq)) (result i32)))", else: ""),
       if(uninorm?, do: Enum.map_join(~w(nfc nfd nfkc nfkd), "\n", fn f -> "  (import \"str\" \"#{f}\" (func $host_#{f} (param (ref null eq)) (result (ref null eq))))" end), else: ""),
@@ -535,10 +536,13 @@ defmodule Beam2Wasm do
       # Regex.split(regex, subject, opts) — delegate the match to a host JS RegExp. The host returns a
       # framed binary <<count:32, (len:32, bytes)...>> (big-endian); we slice out each part as a sub-binary
       # and build the list, dropping empty parts when `trim: true` is in opts (Elixir's :trim semantics).
+      # `parts:` (the remainder stays unsplit) and `include_captures:` are forwarded to the host.
       if(regex_split?, do: """
         (func $Elixir_46_Regex.split_3 (param $re (ref null eq)) (param $subj (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
           (local $fb (ref $bytes)) (local $cnt i32) (local $off i32) (local $len i32) (local $trim i32) (local $out (ref null eq))
-          (local.set $fb (call $bin_bytes (call $host_re_split (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
+          (local.set $fb (call $bin_bytes (call $host_re_split (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj)
+            (call $kw_int (local.get $opts) (global.get $atom_parts))
+            (call $kw_has_true (local.get $opts) (global.get $atom_include_captures)))))
           (local.set $trim (call $kw_has_true (local.get $opts) (global.get $atom_trim)))
           (local.set $cnt (call $rdu32be (local.get $fb) (i32.const 0)))
           (local.set $off (i32.const 4))
@@ -552,6 +556,20 @@ defmodule Beam2Wasm do
             (local.set $cnt (i32.sub (local.get $cnt) (i32.const 1)))
             (br $lp)))
           (return_call $lists.reverse_1 (local.get $out)))
+        (func $kw_int (param $l (ref null eq)) (param $key (ref null eq)) (result i32)
+          (local $h (ref $tuple))
+          (block $d (loop $lp
+            (br_if $d (i32.eqz (ref.test (ref $cons) (local.get $l))))
+            (if (ref.test (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l))))
+              (then
+                (local.set $h (ref.cast (ref $tuple) (struct.get $cons 0 (ref.cast (ref $cons) (local.get $l)))))
+                (if (i32.and (i32.ge_u (array.len (local.get $h)) (i32.const 2))
+                      (i32.and #{term_eq("(array.get $tuple (local.get $h) (i32.const 0))", "(local.get $key)")}
+                               (ref.test (ref i31) (array.get $tuple (local.get $h) (i32.const 1)))))
+                  (then (return (i31.get_s (ref.cast (ref i31) (array.get $tuple (local.get $h) (i32.const 1)))))))))
+            (local.set $l (struct.get $cons 1 (ref.cast (ref $cons) (local.get $l))))
+            (br $lp)))
+          (i32.const 0))
         (func $kw_has_true (param $l (ref null eq)) (param $key (ref null eq)) (result i32)
           (local $h (ref $tuple))
           (block $d (loop $lp
@@ -697,7 +715,27 @@ defmodule Beam2Wasm do
             (local.set $out (struct.new $cons (call $lists.reverse_1 (local.get $caps)) (local.get $out)))
             (local.set $nm (i32.sub (local.get $nm) (i32.const 1)))
             (br $ml)))
-          (return_call $lists.reverse_1 (local.get $out)))\
+          (return_call $lists.reverse_1 (local.get $out)))
+        (func $Elixir_46_Regex.named_captures_2 (param $re (ref null eq)) (param $subj (ref null eq)) (result (ref null eq))
+          ;; host frame: <<matched:8, count:32, (klen:32, k.., vlen:32, v..)*>> -> %{"k" => "v"} | nil
+          (local $fb (ref $bytes)) (local $n i32) (local $off i32) (local $len i32) (local $kv (ref null eq)) (local $k (ref null eq))
+          (local.set $fb (call $bin_bytes (call $host_re_named (call $regex_src (local.get $re)) (call $regex_opts (local.get $re)) (local.get $subj))))
+          (if (i32.eqz (array.get_u $bytes (local.get $fb) (i32.const 0))) (then (return (global.get $atom_nil))))
+          (local.set $n (call $rdu32be (local.get $fb) (i32.const 1)))
+          (local.set $off (i32.const 5))
+          (block $d (loop $lp
+            (br_if $d (i32.eqz (local.get $n)))
+            (local.set $len (call $rdu32be (local.get $fb) (local.get $off)))
+            (local.set $off (i32.add (local.get $off) (i32.const 4)))
+            (local.set $k (call $subbin (local.get $fb) (local.get $off) (local.get $len)))
+            (local.set $off (i32.add (local.get $off) (local.get $len)))
+            (local.set $len (call $rdu32be (local.get $fb) (local.get $off)))
+            (local.set $off (i32.add (local.get $off) (i32.const 4)))
+            (local.set $kv (struct.new $cons (array.new_fixed $tuple 2 (local.get $k) (call $subbin (local.get $fb) (local.get $off) (local.get $len))) (local.get $kv)))
+            (local.set $off (i32.add (local.get $off) (local.get $len)))
+            (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+            (br $lp)))
+          (return_call $maps.from_list_1 (local.get $kv)))\
       """, else: ""),
       # String.Unicode.upcase/downcase(string, mode, acc) -> the cased binary (mode/acc ignored: acc=[]
       # at the top-level entry, and the host does the whole string at once). Genuinely table-backed.
@@ -720,6 +758,7 @@ defmodule Beam2Wasm do
       clos_table,
       helpers(),
       if(bignum, do: bignum_helpers(), else: ""),
+      if(bignum and Process.get(:float), do: Codegen.Runtime.f64_to_int_helper(), else: ""),
       if(flt, do: float_helpers(user), else: ""),
       exports(mods),
       ")"
@@ -804,6 +843,52 @@ defmodule Beam2Wasm do
         end
       {m, n, 1, :list} ->
         "  (func (export \"#{n}\") (param $l (ref null eq)) (result (ref null eq)) (call #{fq(m, n, 1)} (local.get $l)))"
+    end)
+  end
+
+  # ---- closed-world protocol consolidation ----
+  # An UNconsolidated protocol's impl_for falls back to runtime `Module.concat` +
+  # `Code.ensure_compiled` for struct dispatch — dynamic-atom machinery we don't support (and
+  # shouldn't: we have whole-program knowledge at compile time). When a fed protocol beam still
+  # carries that fallback, consolidate it ourselves against the impls actually fed — exactly what
+  # a mix release does — and compile the consolidated binary instead. Already-consolidated beams
+  # (e.g. fed from a mix _build/consolidated dir) are detected and passed through untouched.
+  def consolidate_protocols(beam_paths) do
+    infos = Enum.map(beam_paths, fn p ->
+      case :beam_lib.chunks(String.to_charlist(p), [:exports]) do
+        {:ok, {mod, [exports: exps]}} -> {p, mod, exps}
+        _ -> {p, nil, []}
+      end
+    end)
+    impls_by_proto =
+      for({_p, mod, exps} <- infos, {:__impl__, 1} in exps, do: mod)
+      |> Enum.filter(fn m -> match?({:module, _}, Code.ensure_loaded(m)) end)
+      |> Enum.group_by(fn m -> m.__impl__(:protocol) end, fn m -> m.__impl__(:for) end)
+    Enum.map(infos, fn {p, mod, exps} ->
+      with true <- {:__protocol__, 1} in exps,
+           [_ | _] = types <- Map.get(impls_by_proto, mod, []) |> Enum.uniq(),
+           true <- unconsolidated?(p),
+           {:module, _} <- Code.ensure_loaded(mod),
+           {:ok, bin} <- Protocol.consolidate(mod, types) do
+        out = Path.join(System.tmp_dir!(), "b2w_consolidated_#{mod}.beam")
+        File.write!(out, bin)
+        IO.puts(:stderr, "consolidated protocol #{inspect(mod)} (#{length(types)} fed impls)")
+        out
+      else
+        _ -> p
+      end
+    end)
+  end
+
+  # the unconsolidated fallback's signature: some function in the protocol beam (struct_impl_for)
+  # calls Module.concat at runtime; a consolidated beam dispatches with direct clauses only.
+  defp unconsolidated?(path) do
+    {:beam_file, _, _, _, _, fns} = :beam_disasm.file(String.to_charlist(path))
+    Enum.any?(fns, fn {:function, _n, _a, _e, is} ->
+      Enum.any?(is, fn op ->
+        match?({_, _, {:extfunc, Module, :concat, _}}, op) or
+          match?({_, _, {:extfunc, Module, :concat, _}, _}, op)
+      end)
     end)
   end
 
