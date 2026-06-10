@@ -129,6 +129,27 @@ defmodule Conf do
           %{fn: "sz", sig: {[:bin], :int}, inputs: [["hello"], ["héllo"]]},
           %{fn: "upc", sig: {[:bin], :bin}, inputs: [["Hello, World!"], ["abc 123"]]}
         ]},
+      # ── TRMC: list-building body recursion at depths that OVERFLOWED before the transform
+      # (the cliff was ~10^4 frames; these run at 10^5-10^6 and must stay bit-exact vs the VM,
+      # including construction order — TRMC builds head-first iteratively, recursion built
+      # tail-first, and the results must be indistinguishable).
+      %{cat: "deep-lists", extra: [Enum, Enumerable, Enumerable.List, :lists], src: """
+        defmodule CDeep do
+          def mk(0), do: []
+          def mk(n), do: [n | mk(n - 1)]
+          def build_sum(n), do: mk(n) |> Enum.sum()
+          def map_sum(n), do: mk(n) |> Enum.map(fn x -> x * 2 + 1 end) |> Enum.sum()
+          def chain(n), do: mk(n) |> Enum.filter(fn x -> rem(x, 2) == 0 end) |> Enum.map(fn x -> x * 3 end) |> Enum.sum()
+          def order(n), do: mk(n) |> Enum.map(fn x -> x + 1 end) |> Enum.take(3) |> Enum.reduce(0, fn x, a -> a * 1_000_003 + x end)
+          def deep_lists_map(n), do: :lists.map(fn x -> x + 7 end, mk(n)) |> Enum.sum()
+        end
+        """, cases: [
+          %{fn: "build_sum", sig: {[:int], :int}, inputs: [[1_000_000]]},
+          %{fn: "map_sum", sig: {[:int], :int}, inputs: [[200_000]]},
+          %{fn: "chain", sig: {[:int], :int}, inputs: [[100_000]]},
+          %{fn: "order", sig: {[:int], :int}, inputs: [[100_000]]},
+          %{fn: "deep_lists_map", sig: {[:int], :int}, inputs: [[300_000]]}
+        ]},
       # binary:split full surface: list-of-binaries patterns (leftmost, longest at equal pos),
       # :trim / :trim_all, and String.split/1 whitespace (which is exactly that via String.Break).
       %{cat: "bin-split", extra: [Enum, String, String.Break, :lists], src: """

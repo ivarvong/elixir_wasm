@@ -385,7 +385,7 @@ defmodule Beam2Wasm do
     [
       "(module",
       "  ;; @atoms " <> atoms_json(atoms),
-      "  (type $cons (struct (field (ref null eq)) (field (ref null eq))))",
+      "  (type $cons (struct (field (ref null eq)) (field (mut (ref null eq)))))",   # mut tail: TRMC hole-patching
       # $tuple is a MUTABLE array of terms (mutability only used to BUILD new tuples in setelement/
       # insert/append BIFs — Elixir tuples are never mutated in place). It doubles as the kv-array type
       # used internally by the map flatten/compare helpers (one canonical type; kv arrays never escape

@@ -21,6 +21,14 @@ defmodule Codegen.Emit do
   # ---- per-function compilation ----
   def compile_fun(mod, {:function, name, arity, entry, instrs}) do
     blocks = partition(instrs) |> Enum.map(fn {l, ops} -> {l, resolve_trims(ops)} end)
+    # ── TRMC (tail recursion modulo cons): `[H | rec(T)]` self-recursion becomes a loop that
+    # allocates the cons with a HOLE for the tail and patches it next iteration — bounded stack
+    # for the list-building recursion that dominates real programs (lists:map, Enum list paths,
+    # lexers). The brief tail mutation is never observable: each hole is patched exactly once
+    # before the list escapes. Self TAIL calls in a TRMC function re-enter the dispatch loop
+    # (the chain lives in locals); cross-function tail calls are demoted to call+epilogue so
+    # the patch always runs (see demote_tails).
+    {blocks, trmc?} = trmc_rewrite(blocks, {mod, name, arity})
     idx = blocks |> Enum.with_index() |> Map.new(fn {{l, _}, i} -> {l, i} end)
     entry_idx = Map.fetch!(idx, entry)
     n = length(blocks)
@@ -52,6 +60,15 @@ defmodule Codegen.Emit do
 
     blk = fn l -> Map.fetch!(idx, l) end
     jump = fn l -> "(local.set $blk (i32.const #{blk.(l)})) (br $dispatch)" end
+    # reduction accounting for loop re-entries that bypass the function header (TRMC)
+    reds_check = fn ->
+      case Process.get(:reds) do
+        nil -> []
+        b -> ["(global.set $reds (i32.sub (global.get $reds) (i32.const 1)))",
+              "(if (i32.le_s (global.get $reds) (i32.const 0)) (then (call $yield) (global.set $reds (i32.const #{b}))))"]
+      end
+    end
+    _ = reds_check
     val = &operand/1
     i32v = &i32val/1
     set = fn {t, k}, e -> "(local.set $#{t}#{k} #{e})" end
@@ -681,6 +698,14 @@ defmodule Codegen.Emit do
         {:call_ext, _ar, {:extfunc, m, f, a}} -> {["(local.set $x0 (call #{fq(m, f, a)} #{cargs.(a)}))"], false}
         {:call_ext_only, _ar, {:extfunc, m, f, a}} -> {["(return_call #{fq(m, f, a)} #{cargs.(a)})"], true}
         {:call_ext_last, _ar, {:extfunc, m, f, a}, _d} -> {["(return_call #{fq(m, f, a)} #{cargs.(a)})"], true}
+        {:trmc_cons, h} ->
+          {["(local.set $tmpc (struct.new $cons #{val.(h)} (ref.null none)))",
+            "(if (ref.is_null (local.get $trmc_tail)) (then (local.set $trmc_head (local.get $tmpc))) (else (struct.set $cons 1 (ref.as_non_null (local.get $trmc_tail)) (local.get $tmpc))))",
+            "(local.set $trmc_tail (local.get $tmpc))"] ++ reds_check.() ++
+           ["(local.set $blk (i32.const #{entry_idx})) (br $dispatch)"], true}
+        {:trmc_self_tail} ->
+          {reds_check.() ++ ["(local.set $blk (i32.const #{entry_idx})) (br $dispatch)"], true}
+        :return when trmc? -> {trmc_epilogue(), true}
         :return -> {["(return (local.get $x0))"], true}
         {:jump, {:f, f}} -> {[jump.(f)], true}
         {:select_val, src, {:f, fail}, {:list, pairs}} ->
@@ -777,6 +802,7 @@ defmodule Codegen.Emit do
       [func_decl] ++
         (if maxx >= xstart, do: Enum.map(xstart..maxx, &"    (local $x#{&1} (ref null eq))"), else: []) ++
         (if maxy >= 0, do: Enum.map(0..maxy, &"    (local $y#{&1} (ref null eq))"), else: []) ++
+        (if trmc?, do: ["    (local $trmc_head (ref null $cons)) (local $trmc_tail (ref null $cons))"], else: []) ++
         ["    (local $blk i32) (local $tmpc (ref null $cons)) (local $tmp (ref null eq)) (local $midx i32) (local $mn (ref null $mnode))",
          "    (local $boff i32) (local $blen i32) (local $bdst (ref null $bytes)) (local $bsrc (ref null $bytes)) (local $mc (ref null $mctx))",
          "    (local $tmptup (ref null $tuple)) (local $hmod (ref null eq)) (local $hfun (ref null eq)) (local $hargs (ref null eq))"] ++
@@ -799,6 +825,10 @@ defmodule Codegen.Emit do
         {lines, term} =
           Enum.reduce_while(ops, {[], false}, fn op, {acc, _} ->
             {ls, t} = emit.(op)
+            # in a TRMC function every exit must run the hole-patch epilogue: demote any
+            # cross-function tail call to call+epilogue (self tail calls already re-enter
+            # the dispatch loop via {:trmc_self_tail}).
+            ls = if trmc?, do: demote_tails(ls), else: ls
             if t, do: {:halt, {acc ++ ls, true}}, else: {:cont, {acc ++ ls, false}}
           end)
         lines = if term, do: lines, else: lines ++ [(if next, do: jump.(elem(next, 0)), else: "(unreachable)")]
@@ -973,6 +1003,80 @@ defmodule Codegen.Emit do
       end)
     Enum.reverse(rev)
   end
+  # ── TRMC machinery ──
+  # Detect `call self; (test_heap)?; put_list H, x0, x0; (deallocate)?; return` and replace the
+  # window with {:trmc_cons, H}. When any site exists, self TAIL calls become {:trmc_self_tail}
+  # (loop re-entry keeps the chain locals alive).
+  def trmc_rewrite(blocks, {_m, _f, _a} = self) do
+    rewritten = Enum.map(blocks, fn {l, ops} -> {l, trmc_scan(ops, self)} end)
+    if rewritten == blocks do
+      {blocks, false}
+    else
+      {Enum.map(rewritten, fn {l, ops} ->
+         {l,
+          Enum.map(ops, fn
+            {:call_only, _, ^self} -> {:trmc_self_tail}
+            {:call_last, _, ^self, _} -> {:trmc_self_tail}
+            op -> op
+          end)}
+       end), true}
+    end
+  end
+
+  defp trmc_scan([{:call, _, self} = op | rest], self) do
+    case trmc_window(rest) do
+      {:ok, h, rest2} -> [{:trmc_cons, h} | trmc_scan(rest2, self)]
+      :no -> [op | trmc_scan(rest, self)]
+    end
+  end
+  defp trmc_scan([op | rest], self), do: [op | trmc_scan(rest, self)]
+  defp trmc_scan([], _), do: []
+
+  defp trmc_window(ops) do
+    ops = Enum.drop_while(ops, &match?({:line, _}, &1))
+    ops = case ops do
+      [{:test_heap, _, _} | r] -> r
+      _ -> ops
+    end
+    ops = Enum.drop_while(ops, &match?({:line, _}, &1))
+    case ops do
+      [{:put_list, h, {:x, 0}, {:x, 0}} | r] when h != {:x, 0} ->
+        r = Enum.drop_while(r, &match?({:line, _}, &1))
+        r = case r do
+          [{:deallocate, _} | r2] -> r2
+          _ -> r
+        end
+        r = Enum.drop_while(r, &match?({:line, _}, &1))
+        case r do
+          [:return | r2] -> {:ok, h, r2}
+          _ -> :no
+        end
+      _ -> :no
+    end
+  end
+
+  # every return path of a TRMC function patches the pending hole with x0 and returns the chain
+  def trmc_epilogue do
+    ["(if (ref.is_null (local.get $trmc_tail)) (then (return (local.get $x0))))",
+     "(struct.set $cons 1 (ref.as_non_null (local.get $trmc_tail)) (local.get $x0))",
+     "(return (ref.as_non_null (local.get $trmc_head)))"]
+  end
+
+  # rewrite emitted lines: a tail call becomes a plain call whose result flows through the
+  # epilogue; a plain return is replaced by the epilogue. Lines are single-expression strings.
+  def demote_tails(lines) do
+    Enum.flat_map(lines, fn line ->
+      cond do
+        String.starts_with?(line, "(return_call ") ->
+          ["(local.set $x0 (call " <> String.trim_leading(line, "(return_call ") <> ")"] ++ trmc_epilogue()
+        line == "(return (local.get $x0))" ->
+          trmc_epilogue()
+        true ->
+          [line]
+      end
+    end)
+  end
+
   def shift_y({:y, k}, s), do: {:y, k + s}
   def shift_y({:literal, _} = l, _), do: l
   def shift_y(t, s) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.map(&shift_y(&1, s)) |> List.to_tuple()

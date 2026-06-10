@@ -7,7 +7,7 @@ enumerated inventory; only §1 contains legitimate "can't"s, and even most of th
 answers.
 
 Evidence base (all bit-exact vs the VM, one command: `elixir verify.exs`):
-conformance **198/198** · fuzz **33/33** · gaps **20/20 provably correct** · API scoreboard
+conformance **203/203** · fuzz **33/33** · gaps **20/20 provably correct** · API scoreboard
 **389/389 (100%)** of all 392 public functions of ten stdlib modules (3 remaining are
 `@nondet` — random/shuffle, where equality is not defined) · **genfuzz** (generative random
 programs over the full term algebra) · **regexdiff** (the regex-shim corpus: 76 cases, 0 lies)
@@ -75,13 +75,22 @@ need nothing special.)
 per-isolate today (per-process budgets are roadmap); one isolate = one thread (parallelism comes
 from many isolates/DOs, like BEAM distribution). These change *capacity*, not correctness.
 
-**The body-recursion stack cliff** (measured): deep non-tail recursion overflows V8's default
-~1MB stack at ~10⁴ frames (the VM handles millions; JSPI stacks do NOT help — same limit,
-measured). Node-side mitigation SHIPPED: `runtime/deepstack.mjs` runs an export in a worker
-thread with `resourceLimits.stackSizeMb` — at 256MB, **5,000,000 frames verified**. On workerd
-the stack is platform-fixed, so the cliff stands there (~10⁴); the forward fix is compiler-level
-trampolining of body recursion (roadmap). Note `--stack-size` beyond the actual OS thread stack
-segfaults rather than raising — use the worker mitigation, not the flag.
+**The body-recursion stack cliff** — **LARGELY FIXED by TRMC** (tail recursion modulo cons):
+the compiler detects `[H | rec(T)]`-shaped self-recursion (the BEAM pattern `call self;
+put_list H, x0, x0; return`) and compiles it as a loop that allocates each cons with a HOLE
+for the tail and patches it next iteration ($cons tail is `mut`; each hole is written exactly
+once before the value escapes, so the mutation is never observable). This is the shape that
+dominates real programs — `lists:map`, Enum's list paths, lexers/parsers — and it now runs at
+**10⁶+ elements on the default stack, bit-exact vs the VM** (conformance `deep-lists`,
+scaling `Enum.map`/`uniq` ✓ to 100k; pyex lexes 171KB of source). Self TAIL calls in a TRMC
+function re-enter the dispatch loop; cross-function tail calls demote to call+epilogue so the
+hole always patches. Zero measured perf cost on the hot suites.
+
+What remains of the cliff: NON-cons body recursion (`1 + f(n-1)` accumulation, two-recursive-
+call tree folds) still consumes native frames — ~10⁴ on default stacks, millions via
+`runtime/deepstack.mjs` on Node (256MB worker stack), platform-fixed on workerd. Extending
+the transform to other modulo-operations (associative accumulators, tuple/map construction)
+is mechanical follow-on work; the unbounded general case would need full CPS (not planned).
 
 ---
 
