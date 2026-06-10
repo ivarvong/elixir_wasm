@@ -1,5 +1,25 @@
 # Durable GenServer in a Durable Object — the product thesis, closed
 
+## DEPLOYED: live on production Durable Objects
+
+**https://elixir-durable-bank.ivar.workers.dev** (deploy `6006c0b7`, 2026-06-10; SQLite-backed
+DO class via `wrangler.toml`, works on every plan). Verified in production:
+
+```
+?acct=A&op=balance              -> {"reply":100,"balance":100}     (init)
+?acct=A&op=deposit&amount=50    -> {"reply":":ok","balance":150}
+?acct=A&op=withdraw&amount=30   -> {"reply":":ok","balance":120}
+?acct=A&op=withdraw&amount=999  -> {"reply":":insufficient", ...}  (the compiled guard clause)
+?acct=A-other&op=balance        -> {"reply":100}                   (per-actor isolation)
+... 7 minutes idle ...
+?acct=A&op=balance              -> {"reply":120,"events":6}        (state SURVIVED)
+```
+
+The OTP callback making those decisions is real compiled Elixir (`Bank.handle_call/3`,
+multi-clause + `when amt <= balance` guard) executing inside Cloudflare's actual Durable
+Object, with per-actor state durable across idle/eviction. `npx wrangler deploy` from this
+directory reproduces it.
+
 A real **GenServer**, compiled from Elixir, running inside a **Cloudflare Durable Object** on
 `workerd`, with its state **durable across restart**. This is exactly the repo's pitch — "Durable
 Objects with OTP discipline" — made literal: the OTP callback (`handle_call/3`, multi-clause +

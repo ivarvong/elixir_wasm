@@ -2,7 +2,7 @@
 // DURABLE across restart. Bank.handle_call/3 is real compiled Elixir (multi-clause + guards);
 // the DO drives one GenServer step per request and persists the new state to DO storage.
 // This is "Durable Objects with OTP discipline" made literal — the product thesis, closed.
-import bankModule from "bank.wasm";
+import bankModule from "./bank.wasm";
 
 const e = new WebAssembly.Instance(bankModule, {}).exports;       // no runtime compilation
 const ATOMS = ["true", "false", "Elixir.BankAbi", "handle", "withdraw", "deposit", "balance",

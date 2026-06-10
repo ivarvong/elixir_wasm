@@ -8,6 +8,27 @@ It's a small library under **`compiler/lib/`** (`Codegen.Common` leaf helpers, `
 runtime library, `Codegen.Emit` the emit path, `Beam2Wasm` the orchestration); the top-level
 **`beam2wasm.exs`** is a thin CLI shim, so `elixir beam2wasm.exs <beams>` works as shown below.
 
+## `mix wasm.build` — any Mix project to a deployable module
+
+The compiler is also a Mix package. Add it as a path dependency and build straight from a project:
+
+```elixir
+# mix.exs
+{:beam2wasm, path: "../elixir_wasm/compiler", runtime: false}
+```
+
+```bash
+mix wasm.build --module Blog --export "render:int->bin" --export "render_md:bin->bin" --worker
+```
+
+That compiles the app + every dep + a broad stdlib surface (consolidated protocols preferred,
+self-consolidation as fallback, function-level DCE), assembles with Binaryen, and prints the
+honest report: module size, unsupported constructs (0 = provably supported; `--strict` enforces),
+and called-but-not-fed externals (named traps if ever reached). `--worker` also emits a complete
+Cloudflare scaffold — `worker.mjs` (a JSON-args HTTP dispatcher over your exports), `imports.mjs`,
+`wrangler.toml`, and a `config.capnp` for local workerd. The markdown demo app built through this
+exact path is byte-identical to the VM on all four render checks (`mix help wasm.build`).
+
 One compiler now compiles six programs, all validated against the Elixir VM:
 
 | program        | exercises                                                              | result |

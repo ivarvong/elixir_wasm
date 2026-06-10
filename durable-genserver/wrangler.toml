@@ -1,0 +1,22 @@
+# Deploy the durable GenServer (compiled Elixir inside a real Durable Object):
+#
+#   npx wrangler deploy
+#   curl 'https://elixir-durable-bank.<acct>.workers.dev/?acct=alice&op=deposit&amount=50'
+#
+# SQLite-backed DO classes (new_sqlite_classes) work on every plan; the storage API the
+# worker uses (state.storage.get/put) is identical.
+name = "elixir-durable-bank"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
+
+[durable_objects]
+bindings = [{ name = "BANK", class_name = "BankDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BankDO"]
