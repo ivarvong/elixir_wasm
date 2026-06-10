@@ -8,8 +8,8 @@
 // The host-import surface is the same shared imports.mjs every other runner uses — the worker
 // wires a virtual in-memory filesystem (memFsBacking) for the effects ABI, exactly as
 // LIMITATIONS §1.2 prescribes for Workers.
-import blogModule from "blog.wasm";
-import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "imports.mjs";
+import blogModule from "./blog.wasm";
+import { makeBig, makeMath, makeStr, makeProcStubs, makeFs, makeIo, memFsBacking } from "./imports.mjs";
 
 const big = makeBig(), math = makeMath();
 let e;

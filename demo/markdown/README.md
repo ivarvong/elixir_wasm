@@ -59,6 +59,27 @@ elixir run.exs                       # 3-page pipeline, byte-identical + bench
 (cd vs_js && npm install) && elixir bench_vs_js.exs   # head-to-head vs marked/markdown-it
 ```
 
+## In production (`worker/`) — DEPLOYED on Cloudflare Workers
+
+The same compiled module serves at **https://elixir-markdown.ivar.workers.dev** — real Jason +
+real Earmark on Cloudflare's edge (`GET /?seed=N`, `POST /render` with markdown body).
+
+```bash
+cd worker
+elixir smoke.exs        # local workerd gate: byte-identical over HTTP before any deploy
+npx wrangler deploy     # ship the same three files workerd just served
+```
+
+Measured 2026-06-10 (deploy `71c3b65f`, PoP EWR):
+- **All 4 production responses BYTE-IDENTICAL to the real Elixir VM** (3 article pages +
+  the 3.7 KB document through `POST /render`) — the same differential gate as every suite,
+  now over the public internet.
+- Local workerd (compute floor): p50 = 1.0 ms end-to-end HTTP per render.
+- Production TTFB from a residential client: p50 ≈ 88 ms, of which ~50–60 ms is TCP+TLS to the
+  PoP and one RTT rides the request — worker processing is tens of ms at most, with the p99
+  (~414 ms) showing occasional cold isolates for the 2.9 MB module.
+- Upload: 2995 KiB raw, **505 KiB gzipped**.
+
 ## What it took (each gap BUILT, not worked around — see LIMITATIONS.md)
 
 Getting real Earmark bit-exact drove a long burn-down across the compiler/runtime, every step
