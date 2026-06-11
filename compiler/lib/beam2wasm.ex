@@ -20,6 +20,32 @@ defmodule Beam2Wasm do
   import Beam2Wasm.Codegen.Emit
 
   @doc """
+  Compile beams and return a `Beam2Wasm.Result` — the WAT plus the honesty report
+  (stub count, called-but-not-fed externals). Runs the build in its own process, so
+  it is safe to call from anywhere.
+
+      {:ok, %Beam2Wasm.Result{wat: wat, stubs: 0}} =
+        Beam2Wasm.compile(["a.beam"], exports: "f:int->int")
+  """
+  def compile(beam_paths, opts \\ []) do
+    Task.async(fn ->
+      try do
+        wat = run(beam_paths, opts)
+
+        externals =
+          Regex.scan(~r/;; stub: external ([^\s]+)/, wat)
+          |> Enum.map(fn [_, name] -> name end)
+          |> Enum.uniq()
+
+        {:ok, %Beam2Wasm.Result{wat: wat, stubs: Process.get(:stubs, 0), externals: externals}}
+      rescue
+        e -> {:error, e}
+      end
+    end)
+    |> Task.await(:infinity)
+  end
+
+  @doc """
   Compile a list of `.beam` file paths into a WAT module (returned as a string).
 
   The first beam is the *primary module* — exports resolve against it.
@@ -1295,18 +1321,19 @@ defmodule Beam2Wasm do
         |> Enum.with_index()
         |> Enum.map_join(" ", fn {t, i} ->
           case t do
-            "int" -> "(param $p#{i} i32)"
+            "int" -> "(param $p#{i} f64)"
             "float" -> "(param $p#{i} f64)"
             _ -> "(param $p#{i} (ref null eq))"
           end
         end)
 
-      # int args: in bignum mode narrow through i64 so values above the i31 range (|x| > 2^30,
-      # which an i32 param can carry) become a boxed $big instead of being truncated to 31 bits.
+      # int args arrive as f64: a JS Number IS an f64, so the boundary is exact to 2^53 with
+      # zero caller ceremony. (An i32 param silently WRAPPED a >2^31 JS Number negative — found
+      # by `mix wasm.verify` on its first dogfood run. The ABI must never wrap silently.)
       int_arg = fn i ->
         if Process.get(:bignum),
-          do: "(call $narrow (i64.extend_i32_s (local.get $p#{i})))",
-          else: "(ref.i31 (local.get $p#{i}))"
+          do: "(call $narrow (i64.trunc_f64_s (local.get $p#{i})))",
+          else: "(ref.i31 (i32.trunc_f64_s (local.get $p#{i})))"
       end
 
       args =

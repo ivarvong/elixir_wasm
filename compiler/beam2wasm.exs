@@ -4,6 +4,8 @@
 #   EXPORTS="f:int->bin;g:bin->bin" STUB=1 BIGNUM=1 elixir beam2wasm.exs a.beam b.beam > out.wat
 # (REDS=<n> reduction budget; NODCE=1 disables DCE; NOFUSE=1 disables i64 chain fusion.)
 dir = __DIR__
+Code.require_file("lib/beam2wasm/result.ex", dir)
+Code.require_file("lib/beam2wasm/toolchain.ex", dir)
 Code.require_file("lib/beam2wasm/codegen/common.ex", dir)
 Code.require_file("lib/beam2wasm/codegen/runtime.ex", dir)
 Code.require_file("lib/beam2wasm/codegen/emit.ex", dir)

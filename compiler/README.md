@@ -1,4 +1,42 @@
-# beam2wasm.exs — a BEAM → WasmGC compiler in Elixir
+# beam2wasm — a BEAM → WasmGC compiler in Elixir
+
+## Quickstart (consuming the library)
+
+```elixir
+# mix.exs of YOUR project
+{:beam2wasm, path: "path/to/elixir_wasm/compiler", runtime: false}
+```
+
+```bash
+mix wasm.doctor                 # checks wasm-as / node / workerd / wrangler, with install hints
+mix wasm.build  --module MyApp --export "run:int->bin" --worker
+mix wasm.verify --module MyApp --export "run:int->bin" --runs 50
+```
+
+`wasm.build` compiles your app + deps + a broad stdlib surface to one `.wasm` (with an honest
+report: unsupported constructs and missing externals are NAMED traps, never wrong values) and
+`--worker` emits a deployable Cloudflare scaffold. **`wasm.verify` is the point**: it runs your
+exported functions on the Elixir VM and on the compiled module with identical generated inputs
+and demands the results match exactly — integers at any size, floats by IEEE bit pattern. The
+same differential discipline this compiler is built on, applied to *your* code. (It caught a
+silent export-boundary integer wrap on its own first run.)
+
+From JavaScript, `priv/host.mjs` removes the instantiation boilerplate:
+
+```js
+import { instantiate } from "beam2wasm/priv/host.mjs";
+const m = await instantiate("wasm/my_app.wasm");          // default host imports wired
+console.log(m.callBin("run", "input"));                   // bin->bin convenience
+console.log(m.toJs(m.exports.some_term_fn(42)));          // walk a returned term into JS
+```
+
+Library API: `Beam2Wasm.compile(beam_paths, opts)` →
+`{:ok, %Beam2Wasm.Result{wat:, stubs:, externals:}}`. Export arg/return types:
+`int` (exact to 2^53 at the JS boundary) · `float` · `bin` · `atom` · `list` · `term`.
+
+---
+
+## The research narrative (how this compiler came to be)
 
 A BEAM-bytecode → WasmGC compiler written in **Elixir**, consuming OTP's own **`:beam_disasm`**
 (no hand-rolled `.beam` decoder; typed registers normalized, so it ingests **default Elixir output**).

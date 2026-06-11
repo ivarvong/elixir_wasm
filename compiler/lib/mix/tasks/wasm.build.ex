@@ -222,12 +222,12 @@ defmodule Mix.Tasks.Wasm.Build do
   # ---- compile + assemble ---------------------------------------------------------------
 
   defp compile(beams, exports_spec) do
-    # :stub so unsupported functions become COUNTED traps we can report (and fail on under
-    # --strict) instead of aborting mid-module. Fresh process: build state is process-local.
-    Task.async(fn ->
-      {Beam2Wasm.run(beams, exports: exports_spec, stub: true), Process.get(:stubs, 0)}
-    end)
-    |> Task.await(:infinity)
+    # :stub so unsupported constructs become COUNTED traps we can report (and fail on
+    # under --strict) instead of aborting mid-module.
+    case Beam2Wasm.compile(beams, exports: exports_spec, stub: true) do
+      {:ok, %Beam2Wasm.Result{wat: wat, stubs: stubs}} -> {wat, stubs}
+      {:error, e} -> Mix.raise("compile failed: " <> Exception.message(e))
+    end
   end
 
   # functions some kept code CALLS but no fed beam DEFINES — each emitted as a named trap
@@ -236,12 +236,7 @@ defmodule Mix.Tasks.Wasm.Build do
   end
 
   defp assemble(watf, wasmf) do
-    wasmas =
-      System.get_env("WASM_AS") || System.find_executable("wasm-as") ||
-        (File.exists?("/opt/homebrew/bin/wasm-as") && "/opt/homebrew/bin/wasm-as") ||
-        Mix.raise("wasm-as (Binaryen 130+) not found — `brew install binaryen` or set WASM_AS=")
-
-    case System.cmd(wasmas, [watf, "-o", wasmf, "-all", "--disable-custom-descriptors", "-g"],
+    case System.cmd(Beam2Wasm.Toolchain.wasm_as!(), Beam2Wasm.Toolchain.wasm_as_args(watf, wasmf),
            stderr_to_stdout: true
          ) do
       {_, 0} -> :ok
