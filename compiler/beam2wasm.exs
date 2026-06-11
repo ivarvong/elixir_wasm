@@ -1,12 +1,21 @@
 #!/usr/bin/env elixir
-# Thin CLI shim. The compiler is a library under compiler/lib/ (Codegen.Common, Codegen.Runtime,
-# Codegen.Emit, Beam2Wasm); this loads it and runs the entry point so the existing invocation works:
-#   elixir beam2wasm.exs Elixir.Sort.beam [more.beam ...] > sort.wat
-# (Env vars EXPORTS / STUB / BIGNUM / REDS are read by Beam2Wasm.run.) See compiler/REFACTOR_PLAN.md.
+# Thin CLI shim over the Beam2Wasm library (compiler/lib/). Environment variables are the
+# CLI's interface; they translate to the library's options here and nowhere else:
+#   EXPORTS="f:int->bin;g:bin->bin" STUB=1 BIGNUM=1 elixir beam2wasm.exs a.beam b.beam > out.wat
+# (REDS=<n> reduction budget; NODCE=1 disables DCE; NOFUSE=1 disables i64 chain fusion.)
 dir = __DIR__
-Code.require_file("lib/codegen_common.ex", dir)
-Code.require_file("lib/codegen_runtime.ex", dir)
-Code.require_file("lib/codegen_emit.ex", dir)
+Code.require_file("lib/beam2wasm/codegen/common.ex", dir)
+Code.require_file("lib/beam2wasm/codegen/runtime.ex", dir)
+Code.require_file("lib/beam2wasm/codegen/emit.ex", dir)
 Code.require_file("lib/beam2wasm.ex", dir)
 
-IO.puts(Beam2Wasm.run(System.argv()))
+opts = [
+  exports: System.get_env("EXPORTS"),
+  stub: System.get_env("STUB") != nil,
+  bignum: System.get_env("BIGNUM") != "0",
+  reds: (if r = System.get_env("REDS"), do: String.to_integer(r)),
+  dce: System.get_env("NODCE") == nil,
+  fuse: System.get_env("NOFUSE") == nil
+]
+
+IO.puts(Beam2Wasm.run(System.argv(), opts))
