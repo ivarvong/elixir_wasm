@@ -22,7 +22,7 @@ defmodule Verify do
 
   # {name, dir, args, floor-regex (must match stdout), slow?}
   @suites [
-    {"conformance", "conformance", [], ~r/TOTAL: 203\/203 cases bit-exact/, false},
+    {"conformance", "conformance", [], ~r/TOTAL: 219\/219 cases bit-exact/, false},
     {"fuzz", "fuzz", [], ~r/TOTAL: 33\/33 cases bit-exact/, false},
     {"gaps", "gaps", [], ~r/20\/20 programs PROVABLY CORRECT/, false},
     {"genfuzz", "genfuzz", [], ~r/12\/12 programs bit-exact/, false},

@@ -1685,6 +1685,7 @@ defmodule Beam2Wasm do
     :floor
   ]
   @math_binary [:atan2, :pow]
+  @float_convs [:binary_to_float, :list_to_float, :float_to_binary, :float_to_list]
   def float_mode?(user) do
     Enum.any?(user, fn {_m, {:function, _, _, _, is}} -> Enum.any?(is, &float_op?/1) end)
   end
@@ -1695,6 +1696,13 @@ defmodule Beam2Wasm do
   def float_op?({:call_ext, _, {:extfunc, :math, _, _}}), do: true
   def float_op?({:call_ext_only, _, {:extfunc, :math, _, _}}), do: true
   def float_op?({:call_ext_last, _, {:extfunc, :math, _, _}, _}), do: true
+  # text<->float conversions produce/consume $float boxes, so they imply float mode even
+  # with zero float arithmetic anywhere (e.g. String.to_float |> Float.to_string round-trips:
+  # without this, the fltfmt?/fltparse? gates — which require float mode — never fired and
+  # the conversions stubbed).
+  def float_op?({:call_ext, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
+  def float_op?({:call_ext_only, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
+  def float_op?({:call_ext_last, _, {:extfunc, :erlang, f, _}, _}) when f in @float_convs, do: true
   def float_op?({:literal, t}), do: has_float_literal?(t)
   # a bare float literal operand (e.g. {:float, 0.25}) → float mode
   def float_op?(f) when is_float(f), do: true

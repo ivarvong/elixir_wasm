@@ -41,3 +41,25 @@ now lazy and only loaded when `instantiate` is given a file path.
 `verify/cases.exs` holds the realistic differential cases (balanced/unbalanced/initial
 buy-in/tier-crossing dollar values/every validation error); `mix wasm.verify` adds seeded
 garbage binaries on top, which pins the malformed-JSON path to the VM too.
+
+## The megafuzz (1,000,000 cases)
+
+```
+mix wasm.verify --module Rebalancer --export "rebalance:bin->bin" \
+    --gen verify/gen.exs --runs 1000000 --seed 7
+```
+
+`verify/gen.exs` is a **structured** generator (`--gen`, built for this demo): ~90%
+well-formed portfolios across every magnitude tier, ~10% deliberate hits on each validation
+branch plus malformed JSON. Cases run batched and streamed; every index regenerates its
+exact case from `{seed, index}`. Result: **1,000,000/1,000,000 identical** to the VM.
+
+The first 2,000 structured cases caught a real compiler-stack bug that five suites and the
+typed fuzzer had all missed: the host float→string shim mis-rendered small floats
+(`2.07e-4` came out `0.000207`) because its notation rule was derived from fuzz that never
+generated tiny values. The true Erlang `:short` rule (measured, then verified on 1M
+random-bit-pattern doubles): pick the shorter of plain/scientific, plain wins ties, and
+never plain at or above 2^53. A second gate bug fell out of pinning the fix in conformance:
+text↔float conversions with zero float arithmetic never enabled float mode, so
+`String.to_float |> Float.to_string` round-trips used to stub. Both are fixed at the root
+and pinned (conformance `float-format`, 219/219).

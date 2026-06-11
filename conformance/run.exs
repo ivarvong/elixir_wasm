@@ -169,6 +169,21 @@ defmodule Conf do
           %{fn: "trim_all", sig: {[:bin], :bin}, inputs: [["  a  b "], [""]]},
           %{fn: "ws", sig: {[:bin], :bin}, inputs: [["  hello   world "], ["one two  three"]]}
         ]},
+      # float printing: Erlang :short picks the SHORTER of plain/scientific (plain on ties) and
+      # never prints plain at/above 2^53. The old shim rule ("plain iff dp >= -3") survived every
+      # suite here yet mis-rendered 2.07e-4 as 0.000207 — found by the rebalancer's structured
+      # megafuzz, then pinned by these exact boundary values (and a 1M random-bit-pattern fuzz).
+      %{cat: "float-format", extra: [Float, String], src: """
+        defmodule CFltFmt do
+          def fmt(s), do: Float.to_string(String.to_float(s))
+        end
+        """, cases: [
+          %{fn: "fmt", sig: {[:bin], :bin}, inputs: [
+            ["0.000207"], ["0.0001"], ["0.00049"], ["0.00123"], ["0.000999"], ["0.00003"],
+            ["9007199254740991.0"], ["9007199254740992.0"], ["1.0e15"], ["123456789012345.0"],
+            ["12345678901234567.0"], ["1.0e21"], ["-0.00025"], ["100.0"], ["1000.0"], ["0.1"]
+          ]}
+        ]},
       %{cat: "closures", src: """
         defmodule CClos do
           def map([], _f), do: []

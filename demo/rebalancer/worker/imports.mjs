@@ -394,8 +394,16 @@ export const makeStr = (getExports) => {
       }
       digits = digits.replace(/0+$/, "") || "0";
       const len = digits.length;
+      // Erlang picks the SHORTER of plain vs scientific (plain wins ties), and never goes
+      // plain at or above 2^53 (where doubles stop being integer-exact: 9007199254740991.0
+      // is plain, 9007199254740992.0 is 9.007199254740992e15). Derived from a 438-point
+      // (len, dp) sweep + 200k bit-pattern fuzz of float_to_binary/2 on OTP 27 — the old
+      // "dp >= -3 -> plain" rule mis-rendered e.g. 2.07e-4 as 0.000207 (caught by the
+      // rebalancer's structured megafuzz).
+      const plainLen = dp >= len ? dp + 2 : dp > 0 ? len + 1 : 2 - dp + len;
+      const sciLen = (len === 1 ? 3 : len + 1) + 1 + String(dp - 1).length;
       let out;
-      if (dp >= -3 && dp <= 15 && dp - len <= 2) {
+      if (Math.abs(f) < 9007199254740992 && plainLen <= sciLen) {
         if (dp <= 0) out = "0." + "0".repeat(-dp) + digits;
         else if (dp >= len) out = digits + "0".repeat(dp - len) + ".0";
         else out = digits.slice(0, dp) + "." + digits.slice(dp);

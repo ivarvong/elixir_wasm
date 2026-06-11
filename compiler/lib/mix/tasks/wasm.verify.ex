@@ -11,6 +11,7 @@ defmodule Mix.Tasks.Wasm.Verify do
 
       mix wasm.verify --module Blog --export "render:int->bin" --runs 25
       mix wasm.verify --module Calc --export "f:int,int->int" --cases verify/cases.exs
+      mix wasm.verify --module Api --export "handle:bin->bin" --gen verify/gen.exs --runs 1000000
 
   ## Options
 
@@ -19,6 +20,11 @@ defmodule Mix.Tasks.Wasm.Verify do
     * `--seed N` — generation seed (default 1)
     * `--cases FILE` — an `.exs` evaluating to `%{"export_name" => [args_list, ...]}`,
       used in addition to generated cases
+    * `--gen FILE` — an `.exs` evaluating to `%{"export_name" => fn index -> args_list end}`:
+      a structured case generator for exports whose inputs have a shape (a JSON API, a
+      protocol frame) that typed random args can't reach. `:rand` is seeded from
+      `{seed, index}` before each call, so any case regenerates standalone from its index.
+      Runs are batched and streamed — `--runs 1000000` works in bounded memory.
 
   ## How results are compared
 
@@ -34,7 +40,15 @@ defmodule Mix.Tasks.Wasm.Verify do
   def run(args) do
     {opts, _} =
       OptionParser.parse!(args,
-        strict: [module: :string, export: :keep, runs: :integer, seed: :integer, cases: :string, out: :string]
+        strict: [
+          module: :string,
+          export: :keep,
+          runs: :integer,
+          seed: :integer,
+          cases: :string,
+          gen: :string,
+          out: :string
+        ]
       )
 
     exports = Keyword.get_values(opts, :export)
@@ -57,6 +71,7 @@ defmodule Mix.Tasks.Wasm.Verify do
 
     wasmf = Path.join(out, "#{app}.wasm")
     extra_cases = load_cases(opts[:cases])
+    gens = load_gen(opts[:gen])
     node = Beam2Wasm.Toolchain.node!()
 
     Mix.shell().info(
@@ -67,24 +82,31 @@ defmodule Mix.Tasks.Wasm.Verify do
       exports
       |> Enum.map(&parse_export/1)
       |> Enum.reduce({0, 0}, fn {name, argtypes, _ret}, {p, f} ->
-        cases = Map.get(extra_cases, name, []) ++ gen_cases(argtypes, runs, seed)
-        {vm, wasm} = run_both(module, name, argtypes, cases, wasmf, node)
+        case Map.get(gens, name) do
+          nil ->
+            cases = Map.get(extra_cases, name, []) ++ gen_cases(argtypes, runs, seed)
+            {vm, wasm} = run_both(module, name, argtypes, cases, wasmf, node)
 
-        {p2, f2} =
-          Enum.zip([cases, vm, wasm])
-          |> Enum.reduce({p, f}, fn {args, v, w}, {pa, fa} ->
-            if v == w do
-              {pa + 1, fa}
-            else
-              Mix.shell().error("  ✗ #{name}(#{Enum.map_join(args, ", ", &inspect/1)})")
-              Mix.shell().error("      vm:   #{String.slice(v, 0, 110)}")
-              Mix.shell().error("      wasm: #{String.slice(w, 0, 110)}")
-              {pa, fa + 1}
-            end
-          end)
+            {p2, f2} =
+              Enum.zip([cases, vm, wasm])
+              |> Enum.reduce({p, f}, fn {args, v, w}, {pa, fa} ->
+                if v == w do
+                  {pa + 1, fa}
+                else
+                  Mix.shell().error("  ✗ #{name}(#{Enum.map_join(args, ", ", &inspect/1)})")
+                  Mix.shell().error("      vm:   #{String.slice(v, 0, 110)}")
+                  Mix.shell().error("      wasm: #{String.slice(w, 0, 110)}")
+                  {pa, fa + 1}
+                end
+              end)
 
-        Mix.shell().info("  #{name}: #{p2 - p}/#{length(cases)} identical")
-        {p2, f2}
+            Mix.shell().info("  #{name}: #{p2 - p}/#{length(cases)} identical")
+            {p2, f2}
+
+          gen ->
+            {gp, gf} = verify_gen(module, name, argtypes, gen, runs, seed, wasmf, node)
+            {p + gp, f + gf}
+        end
       end)
 
     Mix.shell().info("\n  #{pass} identical · #{fail} DIVERGENT")
@@ -133,6 +155,69 @@ defmodule Mix.Tasks.Wasm.Verify do
           Mix.raise("wasm.verify can generate int/float/bin args (got #{other}); supply --cases for #{other}")
       end)
     end
+  end
+
+  # ── the --gen path: structured cases at fuzzing scale, batched + streamed ──
+  # Each index is independently reproducible: :rand reseeds from {seed, index} before the
+  # generator runs, so a divergence report's index + seed regenerate the exact case.
+  @gen_batch 25_000
+
+  defp verify_gen(module, name, argtypes, gen, runs, seed, wasmf, node) do
+    nbatch = div(runs + @gen_batch - 1, @gen_batch)
+
+    {pass, fail, samples} =
+      Enum.reduce(0..(nbatch - 1), {0, 0, []}, fn b, {pa, fa, sa} ->
+        lo = b * @gen_batch
+        hi = min(runs, lo + @gen_batch) - 1
+
+        cases =
+          Enum.map(lo..hi, fn i ->
+            :rand.seed(:exsss, {seed, i, 9241})
+            gen.(i)
+          end)
+
+        {vm, wasm} = run_both(module, name, argtypes, cases, wasmf, node)
+
+        {bp, bf, bs} =
+          [Enum.to_list(lo..hi), cases, vm, wasm]
+          |> Enum.zip()
+          |> Enum.reduce({0, 0, []}, fn {i, args, v, w}, {x, y, s} ->
+            cond do
+              v == w -> {x + 1, y, s}
+              length(sa) + length(s) < 5 -> {x, y + 1, [{i, args, v, w} | s]}
+              true -> {x, y + 1, s}
+            end
+          end)
+
+        done = pa + fa + bp + bf
+        IO.write("\r  #{name}: #{done}/#{runs}  (#{fa + bf} divergent)")
+        {pa + bp, fa + bf, sa ++ Enum.reverse(bs)}
+      end)
+
+    IO.write("\n")
+
+    Enum.each(samples, fn {i, args, v, w} ->
+      Mix.shell().error("  ✗ #{name} case ##{i} (regen: seed=#{seed} index=#{i})")
+      Mix.shell().error("      args: #{String.slice(Enum.map_join(args, ", ", &inspect/1), 0, 140)}")
+      Mix.shell().error("      vm:   #{String.slice(v, 0, 110)}")
+      Mix.shell().error("      wasm: #{String.slice(w, 0, 110)}")
+    end)
+
+    if fail > length(samples),
+      do: Mix.shell().error("  … #{fail - length(samples)} more divergences not shown")
+
+    {pass, fail}
+  end
+
+  defp load_gen(nil), do: %{}
+
+  defp load_gen(file) do
+    {gens, _} = Code.eval_file(file)
+
+    unless is_map(gens) and Enum.all?(gens, fn {k, v} -> is_binary(k) and is_function(v, 1) end),
+      do: Mix.raise("--gen file must evaluate to %{\"export\" => fn index -> [args] end}")
+
+    gens
   end
 
   defp load_cases(nil), do: %{}
