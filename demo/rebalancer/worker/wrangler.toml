@@ -13,3 +13,8 @@ compatibility_date = "2026-06-01"
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
 fallthrough = true
+
+# Workers Logs: retained, queryable invocation logs (incl. CPU time) in the dashboard —
+# https://dash.cloudflare.com -> Workers & Pages -> elixir-rebalancer -> Logs
+[observability]
+enabled = true
