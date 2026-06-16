@@ -19,3 +19,13 @@ First packaged version. Highlights, in the order they were earned:
 
 Verification: eight differential suites vs the real Elixir VM (`elixir verify.exs` in
 the repository), pinned floors, zero tolerated lies.
+
+Packaging / quality:
+
+- Public API is `Beam2Wasm.compile/2` and `Beam2Wasm.run/2` (both `@spec`'d); all
+  compiler internals are now private (`defp`), so the generated docs describe a real
+  API surface rather than the codegen internals.
+- Credo (`mix credo`) and `mix format` clean; CI (`.github/workflows/ci.yml`) runs
+  format + Credo + ExUnit, plus the differential `verify.exs` gate, on every push/PR.
+- `nodeFsBacking` / `nodeSqliteBacking` carry explicit capability-model security notes
+  (full-host-FS / arbitrary-SQL authority — wire only to trusted modules).

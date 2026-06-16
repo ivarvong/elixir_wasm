@@ -27,6 +27,8 @@ defmodule Beam2Wasm do
       {:ok, %Beam2Wasm.Result{wat: wat, stubs: 0}} =
         Beam2Wasm.compile(["a.beam"], exports: "f:int->int")
   """
+  @spec compile([Path.t()], keyword()) ::
+          {:ok, Beam2Wasm.Result.t()} | {:error, Exception.t()}
   def compile(beam_paths, opts \\ []) do
     Task.async(fn ->
       try do
@@ -64,6 +66,7 @@ defmodule Beam2Wasm do
   Build state is process-local: run each build in its own process (the `mix wasm.build`
   task wraps it in `Task.async/1`).
   """
+  @spec run([Path.t()], keyword()) :: String.t()
   def run(beam_paths, opts \\ []) do
     Process.put(:exports_spec, Keyword.get(opts, :exports))
     Process.put(:dce, Keyword.get(opts, :dce, true))
@@ -1289,7 +1292,7 @@ defmodule Beam2Wasm do
     |> Enum.join("\n")
   end
 
-  def exports(mods) do
+  defp exports(mods) do
     case Process.get(:exports_spec) do
       nil -> legacy_exports(mods)
       spec -> generic_exports(spec)
@@ -1300,7 +1303,7 @@ defmodule Beam2Wasm do
   # Param int -> i32 boxed to i31; param bin/list/term -> (ref null eq) passed through.
   # Return int -> i32; atom -> i32 atom-index (decode via the @atoms table comment);
   # bin/list/term -> (ref null eq) (read via the bin_* / cons bridge helpers).
-  def generic_exports(spec) do
+  defp generic_exports(spec) do
     spec
     |> String.split(";", trim: true)
     |> Enum.map_join("\n", fn s ->
@@ -1372,7 +1375,7 @@ defmodule Beam2Wasm do
     end)
   end
 
-  def legacy_exports(mods) do
+  defp legacy_exports(mods) do
     specs =
       Enum.flat_map(mods, fn m ->
         sp =
@@ -1414,7 +1417,7 @@ defmodule Beam2Wasm do
   # carries that fallback, consolidate it ourselves against the impls actually fed — exactly what
   # a mix release does — and compile the consolidated binary instead. Already-consolidated beams
   # (e.g. fed from a mix _build/consolidated dir) are detected and passed through untouched.
-  def consolidate_protocols(beam_paths) do
+  defp consolidate_protocols(beam_paths) do
     infos =
       Enum.map(beam_paths, fn p ->
         case :beam_lib.chunks(String.to_charlist(p), [:exports]) do
@@ -1460,7 +1463,7 @@ defmodule Beam2Wasm do
   # In STUB mode, a function using a long-tail construct we don't lower yet (try/apply,
   # float arithmetic, odd binary segments) becomes a trap stub instead of failing the build.
   # Only unexercised (non-list-fast-path) Enum functions hit this.
-  def safe_compile_fun(mod, {:function, name, arity, _e, _i} = f) do
+  defp safe_compile_fun(mod, {:function, name, arity, _e, _i} = f) do
     # A BIF/NIF we shim by hand (its BEAM body is native, e.g. :lists.reverse/2 = nif_error):
     # skip its BEAM body; the builtin_section emits the shim once.
     if Map.has_key?(builtins(), fq(mod, name, arity)) do
@@ -1475,7 +1478,7 @@ defmodule Beam2Wasm do
   end
 
   # minimal JSON array-of-strings encoder (no deps) for the @atoms table comment
-  def atoms_json(atoms) do
+  defp atoms_json(atoms) do
     inner =
       Enum.map_join(atoms, ",", fn a ->
         s =
@@ -1496,7 +1499,7 @@ defmodule Beam2Wasm do
   end
 
   # ---- function-level DCE: reachable closure from the exported entry points ----
-  def export_seeds(mods) do
+  defp export_seeds(mods) do
     case Process.get(:exports_spec) do
       nil ->
         legacy_seeds(mods)
@@ -1515,7 +1518,7 @@ defmodule Beam2Wasm do
     end
   end
 
-  def legacy_seeds(mods) do
+  defp legacy_seeds(mods) do
     Enum.flat_map(mods, fn m ->
       sp =
         case m do
@@ -1532,38 +1535,36 @@ defmodule Beam2Wasm do
     end)
   end
 
-  def reachable(user, seeds) do
+  defp reachable(user, seeds) do
     by_key = Map.new(user, fn {m, {:function, n, a, _, _} = f} -> {{m, n, a}, f} end)
     by_arity = Map.keys(by_key) |> Enum.group_by(fn {_m, _f, a} -> a end)
     do_reach(seeds, MapSet.new(), by_key, by_arity)
   end
 
-  def do_reach([], seen, _bk, _ba), do: seen
+  defp do_reach([], seen, _bk, _ba), do: seen
 
-  def do_reach([k | rest], seen, bk, ba) do
-    cond do
-      MapSet.member?(seen, k) or not Map.has_key?(bk, k) ->
-        do_reach(rest, seen, bk, ba)
+  defp do_reach([k | rest], seen, bk, ba) do
+    if MapSet.member?(seen, k) or not Map.has_key?(bk, k) do
+      do_reach(rest, seen, bk, ba)
+    else
+      {:function, _, _, _, is} = Map.fetch!(bk, k)
+      # edge_refs covers direct/ext calls + make_fun3; literal_funs_in covers CAPTURED funs
+      # (`&Mod.f/a`, `&abs/1`) which the BEAM stores as constant fun values — also roots, else
+      # their target bodies get pruned and the apply/trampoline dispatch falls to (unreachable).
+      targets =
+        if k in [{Req.Finch, :run, 1}],
+          # Req.Finch.run/1 is overridden (the adapter) → a leaf, so the ssl/inet/pool subtree is pruned
+          do: [],
+          else: Enum.flat_map(is, &edge_refs/1) ++ Enum.flat_map(is, &literal_funs_in/1)
 
-      true ->
-        {:function, _, _, _, is} = Map.fetch!(bk, k)
-        # edge_refs covers direct/ext calls + make_fun3; literal_funs_in covers CAPTURED funs
-        # (`&Mod.f/a`, `&abs/1`) which the BEAM stores as constant fun values — also roots, else
-        # their target bodies get pruned and the apply/trampoline dispatch falls to (unreachable).
-        targets =
-          if k in [{Req.Finch, :run, 1}],
-            # Req.Finch.run/1 is overridden (the adapter) → a leaf, so the ssl/inet/pool subtree is pruned
-            do: [],
-            else: Enum.flat_map(is, &edge_refs/1) ++ Enum.flat_map(is, &literal_funs_in/1)
+      # erlang:spawn_opt / apply / spawn(M,F,A) dispatch on a RUNTIME M:F/A, which DCE can't trace —
+      # so any function could be the target. Keep them all (correct; defeats pruning for such modules).
+      extra =
+        if Enum.any?(is, &wild_dispatch?/1),
+          do: Map.keys(bk),
+          else: apply_targets(is, ba)
 
-        # erlang:spawn_opt / apply / spawn(M,F,A) dispatch on a RUNTIME M:F/A, which DCE can't trace —
-        # so any function could be the target. Keep them all (correct; defeats pruning for such modules).
-        extra =
-          if Enum.any?(is, &wild_dispatch?/1),
-            do: Map.keys(bk),
-            else: apply_targets(is, ba)
-
-        do_reach(targets ++ extra ++ rest, MapSet.put(seen, k), bk, ba)
+      do_reach(targets ++ extra ++ rest, MapSet.put(seen, k), bk, ba)
     end
   end
 
@@ -1573,7 +1574,7 @@ defmodule Beam2Wasm do
   # `:handle_call` etc.), only arity-n functions WITH THAT NAME can be the runtime target — so keep
   # just those, not every arity-n function (which would drag in unrelated dead code like Float.round/3).
   # If the name is set non-constantly (truly dynamic), fall back to keeping all arity-n (sound).
-  def apply_targets(is, ba) do
+  defp apply_targets(is, ba) do
     arities =
       Enum.flat_map(is, fn
         {:apply, n} -> [n]
@@ -1593,7 +1594,7 @@ defmodule Beam2Wasm do
   # Inspect every WRITE to register x[k] in a function body. Returns {constant_atoms_written, all_const?}
   # where all_const? is true iff EVERY writer of x[k] is a move of a constant atom. Conservative: any
   # non-move writer (call result, bif dst, …) or a move from a non-atom source ⇒ all_const? = false.
-  def reg_const_atoms(is, k) do
+  defp reg_const_atoms(is, k) do
     writes = Enum.flat_map(is, &reg_writes/1) |> Enum.filter(fn {reg, _} -> reg == {:x, k} end)
     atoms = for {_reg, {:const_atom, a}} <- writes, do: a
     all_const? = writes != [] and Enum.all?(writes, fn {_reg, src} -> match?({:const_atom, _}, src) end)
@@ -1601,16 +1602,16 @@ defmodule Beam2Wasm do
   end
 
   # {dest_reg, source} for instructions that write a register; source is {:const_atom, a} or :other.
-  def reg_writes({:move, {:atom, a}, {:x, _} = d}), do: [{d, {:const_atom, a}}]
-  def reg_writes({:move, {:literal, a}, {:x, _} = d}) when is_atom(a), do: [{d, {:const_atom, a}}]
-  def reg_writes({:move, _src, {:x, _} = d}), do: [{d, :other}]
-  def reg_writes({:bif, _, _, _, {:x, _} = d}), do: [{d, :other}]
-  def reg_writes({:gc_bif, _, _, _, _, {:x, _} = d}), do: [{d, :other}]
-  def reg_writes({:get_tuple_element, _, _, {:x, _} = d}), do: [{d, :other}]
+  defp reg_writes({:move, {:atom, a}, {:x, _} = d}), do: [{d, {:const_atom, a}}]
+  defp reg_writes({:move, {:literal, a}, {:x, _} = d}) when is_atom(a), do: [{d, {:const_atom, a}}]
+  defp reg_writes({:move, _src, {:x, _} = d}), do: [{d, :other}]
+  defp reg_writes({:bif, _, _, _, {:x, _} = d}), do: [{d, :other}]
+  defp reg_writes({:gc_bif, _, _, _, _, {:x, _} = d}), do: [{d, :other}]
+  defp reg_writes({:get_tuple_element, _, _, {:x, _} = d}), do: [{d, :other}]
   # dests are inside the list; treat as :other below
-  def reg_writes({:get_map_elements, _, _, {:list, _}} = _op), do: []
+  defp reg_writes({:get_map_elements, _, _, {:list, _}} = _op), do: []
 
-  def reg_writes(op) when is_tuple(op) do
+  defp reg_writes(op) when is_tuple(op) do
     # any other op that names x[k] as its LAST element (the conventional dst slot) writes it non-constantly
     case :erlang.tuple_to_list(op) |> List.last() do
       {:x, _} = d -> [{d, :other}]
@@ -1618,50 +1619,50 @@ defmodule Beam2Wasm do
     end
   end
 
-  def reg_writes(_), do: []
+  defp reg_writes(_), do: []
 
-  def edge_refs({:call, _, {m, f, a}}), do: [{m, f, a}]
-  def edge_refs({:call_only, _, {m, f, a}}), do: [{m, f, a}]
-  def edge_refs({:call_last, _, {m, f, a}, _}), do: [{m, f, a}]
-  def edge_refs({:call_ext, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
-  def edge_refs({:call_ext_only, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
-  def edge_refs({:call_ext_last, _, {:extfunc, m, f, a}, _}), do: [{m, f, a}]
-  def edge_refs({:make_fun3, {m, fun, arity}, _, _, _, _}), do: [{m, fun, arity}]
-  def edge_refs(_), do: []
+  defp edge_refs({:call, _, {m, f, a}}), do: [{m, f, a}]
+  defp edge_refs({:call_only, _, {m, f, a}}), do: [{m, f, a}]
+  defp edge_refs({:call_last, _, {m, f, a}, _}), do: [{m, f, a}]
+  defp edge_refs({:call_ext, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
+  defp edge_refs({:call_ext_only, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
+  defp edge_refs({:call_ext_last, _, {:extfunc, m, f, a}, _}), do: [{m, f, a}]
+  defp edge_refs({:make_fun3, {m, fun, arity}, _, _, _, _}), do: [{m, fun, arity}]
+  defp edge_refs(_), do: []
   # a call dispatching on a runtime M:F/A — DCE must keep all functions as potential targets
-  def wild_dispatch?({_, _, {:extfunc, :erlang, f, _}}) when f in [:spawn_opt, :apply, :spawn], do: true
-  def wild_dispatch?({_, _, {:extfunc, :erlang, f, _}, _}) when f in [:spawn_opt, :apply, :spawn], do: true
-  def wild_dispatch?(_), do: false
+  defp wild_dispatch?({_, _, {:extfunc, :erlang, f, _}}) when f in [:spawn_opt, :apply, :spawn], do: true
+  defp wild_dispatch?({_, _, {:extfunc, :erlang, f, _}, _}) when f in [:spawn_opt, :apply, :spawn], do: true
+  defp wild_dispatch?(_), do: false
 
   # processes present? (spawn/send/self/receive). Enables the proc imports + scheduler glue.
-  def proc_mode?(user) do
+  defp proc_mode?(user) do
     Enum.any?(user, fn {_m, {:function, _, _, _, is}} -> Enum.any?(is, &proc_op?/1) end)
   end
 
-  def proc_op?({:call_ext, _, {:extfunc, :erlang, :spawn, _}}), do: true
-  def proc_op?({:call_ext, _, {:extfunc, :erlang, :spawn_link, _}}), do: true
-  def proc_op?({:call_ext, _, {:extfunc, :erlang, :send, 2}}), do: true
-  def proc_op?({:bif, :self, _, _, _}), do: true
-  def proc_op?({:loop_rec, _, _}), do: true
-  def proc_op?(:remove_message), do: true
-  def proc_op?({:wait, _}), do: true
-  def proc_op?(_), do: false
+  defp proc_op?({:call_ext, _, {:extfunc, :erlang, :spawn, _}}), do: true
+  defp proc_op?({:call_ext, _, {:extfunc, :erlang, :spawn_link, _}}), do: true
+  defp proc_op?({:call_ext, _, {:extfunc, :erlang, :send, 2}}), do: true
+  defp proc_op?({:bif, :self, _, _, _}), do: true
+  defp proc_op?({:loop_rec, _, _}), do: true
+  defp proc_op?(:remove_message), do: true
+  defp proc_op?({:wait, _}), do: true
+  defp proc_op?(_), do: false
 
   # exceptions present? (try/catch/raise) -> emit the $exc tag + wrap try-functions in try_table
-  def exc_mode?(user) do
+  defp exc_mode?(user) do
     Enum.any?(user, fn {_m, {:function, _, _, _, is}} -> Enum.any?(is, &exc_op?/1) end)
   end
 
-  def exc_op?({:try, _, _}), do: true
-  def exc_op?({:try_case, _}), do: true
-  def exc_op?({:catch, _, _}), do: true
-  def exc_op?({:catch_end, _}), do: true
-  def exc_op?({ce, _, {:extfunc, :erlang, :throw, 1}}) when ce in [:call_ext, :call_ext_only], do: true
-  def exc_op?({:call_ext_last, _, {:extfunc, :erlang, :throw, 1}, _}), do: true
-  def exc_op?({ce, _, {:extfunc, :erlang, :error, _}}) when ce in [:call_ext, :call_ext_only], do: true
-  def exc_op?({:call_ext_last, _, {:extfunc, :erlang, :error, _}, _}), do: true
-  def exc_op?({:bif, :raise, _, _, _}), do: true
-  def exc_op?(_), do: false
+  defp exc_op?({:try, _, _}), do: true
+  defp exc_op?({:try_case, _}), do: true
+  defp exc_op?({:catch, _, _}), do: true
+  defp exc_op?({:catch_end, _}), do: true
+  defp exc_op?({ce, _, {:extfunc, :erlang, :throw, 1}}) when ce in [:call_ext, :call_ext_only], do: true
+  defp exc_op?({:call_ext_last, _, {:extfunc, :erlang, :throw, 1}, _}), do: true
+  defp exc_op?({ce, _, {:extfunc, :erlang, :error, _}}) when ce in [:call_ext, :call_ext_only], do: true
+  defp exc_op?({:call_ext_last, _, {:extfunc, :erlang, :error, _}, _}), do: true
+  defp exc_op?({:bif, :raise, _, _, _}), do: true
+  defp exc_op?(_), do: false
 
   # ---- floats: f64 register file + boxed $float term + :math.* via host imports ----
   # Unary :math functions that map 1:1 onto a host (JS Math) call of the same name; plus the
@@ -1686,37 +1687,37 @@ defmodule Beam2Wasm do
   ]
   @math_binary [:atan2, :pow]
   @float_convs [:binary_to_float, :list_to_float, :float_to_binary, :float_to_list]
-  def float_mode?(user) do
+  defp float_mode?(user) do
     Enum.any?(user, fn {_m, {:function, _, _, _, is}} -> Enum.any?(is, &float_op?/1) end)
   end
 
-  def float_op?({:fconv, _, _}), do: true
-  def float_op?({:fmove, _, _}), do: true
-  def float_op?({:bif, op, _, _, _}) when op in [:fadd, :fsub, :fmul, :fdiv], do: true
-  def float_op?({:call_ext, _, {:extfunc, :math, _, _}}), do: true
-  def float_op?({:call_ext_only, _, {:extfunc, :math, _, _}}), do: true
-  def float_op?({:call_ext_last, _, {:extfunc, :math, _, _}, _}), do: true
+  defp float_op?({:fconv, _, _}), do: true
+  defp float_op?({:fmove, _, _}), do: true
+  defp float_op?({:bif, op, _, _, _}) when op in [:fadd, :fsub, :fmul, :fdiv], do: true
+  defp float_op?({:call_ext, _, {:extfunc, :math, _, _}}), do: true
+  defp float_op?({:call_ext_only, _, {:extfunc, :math, _, _}}), do: true
+  defp float_op?({:call_ext_last, _, {:extfunc, :math, _, _}, _}), do: true
   # text<->float conversions produce/consume $float boxes, so they imply float mode even
   # with zero float arithmetic anywhere (e.g. String.to_float |> Float.to_string round-trips:
   # without this, the fltfmt?/fltparse? gates — which require float mode — never fired and
   # the conversions stubbed).
-  def float_op?({:call_ext, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
-  def float_op?({:call_ext_only, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
-  def float_op?({:call_ext_last, _, {:extfunc, :erlang, f, _}, _}) when f in @float_convs, do: true
-  def float_op?({:literal, t}), do: has_float_literal?(t)
+  defp float_op?({:call_ext, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
+  defp float_op?({:call_ext_only, _, {:extfunc, :erlang, f, _}}) when f in @float_convs, do: true
+  defp float_op?({:call_ext_last, _, {:extfunc, :erlang, f, _}, _}) when f in @float_convs, do: true
+  defp float_op?({:literal, t}), do: has_float_literal?(t)
   # a bare float literal operand (e.g. {:float, 0.25}) → float mode
-  def float_op?(f) when is_float(f), do: true
-  def float_op?(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.any?(&float_op?/1)
-  def float_op?(l) when is_list(l), do: Enum.any?(l, &float_op?/1)
-  def float_op?(_), do: false
+  defp float_op?(f) when is_float(f), do: true
+  defp float_op?(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.any?(&float_op?/1)
+  defp float_op?(l) when is_list(l), do: Enum.any?(l, &float_op?/1)
+  defp float_op?(_), do: false
 
-  def has_float_literal?(f) when is_float(f), do: true
-  def has_float_literal?(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.any?(&has_float_literal?/1)
-  def has_float_literal?(l) when is_list(l), do: Enum.any?(l, &has_float_literal?/1)
-  def has_float_literal?(m) when is_map(m), do: Enum.any?(Map.to_list(m), &has_float_literal?/1)
-  def has_float_literal?(_), do: false
+  defp has_float_literal?(f) when is_float(f), do: true
+  defp has_float_literal?(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.any?(&has_float_literal?/1)
+  defp has_float_literal?(l) when is_list(l), do: Enum.any?(l, &has_float_literal?/1)
+  defp has_float_literal?(m) when is_map(m), do: Enum.any?(Map.to_list(m), &has_float_literal?/1)
+  defp has_float_literal?(_), do: false
   # the :math functions actually called, that we know how to lower
-  def math_funs_used(user) do
+  defp math_funs_used(user) do
     known = (Enum.map(@math_unary, &{&1, 1}) ++ Enum.map(@math_binary, &{&1, 2})) |> MapSet.new()
 
     user
@@ -1730,7 +1731,7 @@ defmodule Beam2Wasm do
     |> Enum.filter(fn {:math, f, a} -> MapSet.member?(known, {f, a}) end)
   end
 
-  def float_imports(user) do
+  defp float_imports(user) do
     math_funs_used(user)
     |> Enum.map_join("\n", fn {:math, f, a} ->
       ps = String.duplicate(" f64", a)
@@ -1738,7 +1739,7 @@ defmodule Beam2Wasm do
     end)
   end
 
-  def float_helpers(user) do
+  defp float_helpers(user) do
     # term -> f64: i31 converts; $float unboxes; in bignum mode an $i64 box converts natively and a
     # true bignum goes through the host (Number(BigInt) — lossy past 2^53, like the BEAM).
     to_f64 =
@@ -1789,7 +1790,7 @@ defmodule Beam2Wasm do
   # The host owns the scheduler (process table, mailboxes, ready queue). The compiler emits
   # calls to these imports; recv_wait is the JSPI suspend point. Pids cross as i32 (boxed to
   # i31 on the Wasm side); messages cross as opaque eq-refs round-tripped through JS.
-  def proc_imports do
+  defp proc_imports do
     """
       (import "proc" "spawn"        (func $spawn_raw (param (ref null eq)) (result i32)))
       (import "proc" "send"         (func $send_raw (param i32) (param (ref null eq)) (result (ref null eq))))
@@ -1817,7 +1818,7 @@ defmodule Beam2Wasm do
 
   # Entry the host calls (on a JSPI promising stack) to run a spawned 0-arg closure, plus
   # constructors the host uses to build exit signals (atoms live in Wasm, not JS).
-  def start_process(mfa?) do
+  defp start_process(mfa?) do
     mfa_helpers =
       if mfa? do
         """
@@ -1873,27 +1874,27 @@ defmodule Beam2Wasm do
   end
 
   # closures: every make_fun3 target as {mod, fun, total_arity, num_free_vars}, unique
-  def collect_closures(user) do
+  defp collect_closures(user) do
     user
     |> Enum.flat_map(fn {_mod, {:function, _, _, _, is}} -> Enum.flat_map(is, &make_fun_refs/1) end)
     |> Enum.uniq()
   end
 
-  def make_fun_refs({:make_fun3, {m, fun, arity}, _i, _h, _d, {:list, free}}),
+  defp make_fun_refs({:make_fun3, {m, fun, arity}, _i, _h, _d, {:list, free}}),
     do: [{m, fun, arity, length(free)}]
 
-  def make_fun_refs(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&make_fun_refs/1)
-  def make_fun_refs(l) when is_list(l), do: Enum.flat_map(l, &make_fun_refs/1)
-  def make_fun_refs(_), do: []
+  defp make_fun_refs(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&make_fun_refs/1)
+  defp make_fun_refs(l) when is_list(l), do: Enum.flat_map(l, &make_fun_refs/1)
+  defp make_fun_refs(_), do: []
 
-  def collect_literal_funs(user) do
+  defp collect_literal_funs(user) do
     user
     |> Enum.flat_map(fn {_mod, {:function, _, _, _, is}} -> Enum.flat_map(is, &literal_funs_in/1) end)
     |> Enum.uniq()
   end
 
   # is String.Chars.to_string/1 (string interpolation `#{}` + Enum.join element conversion) reachable?
-  def to_string?(user) do
+  defp to_string?(user) do
     # only shim when the real String.Chars protocol isn't compiled in (else its body wins).
     not Enum.any?(user, fn {m, _} -> m == String.Chars end) and
       Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
@@ -1904,28 +1905,28 @@ defmodule Beam2Wasm do
       end)
   end
 
-  def literal_funs_in({:literal, f}) when is_function(f), do: literal_funs_in(f)
+  defp literal_funs_in({:literal, f}) when is_function(f), do: literal_funs_in(f)
 
-  def literal_funs_in(f) when is_function(f) do
+  defp literal_funs_in(f) when is_function(f) do
     info = :erlang.fun_info(f)
     [{Keyword.fetch!(info, :module), Keyword.fetch!(info, :name), Keyword.fetch!(info, :arity)}]
   end
 
-  def literal_funs_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&literal_funs_in/1)
-  def literal_funs_in(l) when is_list(l), do: Enum.flat_map(l, &literal_funs_in/1)
+  defp literal_funs_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&literal_funs_in/1)
+  defp literal_funs_in(l) when is_list(l), do: Enum.flat_map(l, &literal_funs_in/1)
   # a fun can be nested inside a constant MAP value (e.g. Logger metadata `%{report_cb: &format_report/1}`);
   # recurse so its name atom is interned (materialize references $atom_<name>) and it's a DCE root.
-  def literal_funs_in(m) when is_map(m),
+  defp literal_funs_in(m) when is_map(m),
     do: Map.to_list(m) |> Enum.flat_map(fn {k, v} -> literal_funs_in(k) ++ literal_funs_in(v) end)
 
-  def literal_funs_in(_), do: []
+  defp literal_funs_in(_), do: []
 
   # A captured ext fun (e.g. `&abs/1`, `&band/2`) is an Erlang BIF lowered INLINE — it has no
   # standalone function the apply/trampoline path can tail-call. For each such captured MFA that is
   # neither a user function nor an existing builtin shim, synthesize a wrapper $Mod.fun_arity whose
   # body is the same mode-aware expression the inline lowering uses. (Used both as a callable target
   # and as an apply_N clause; see captured_ext_targets/1.)
-  def captured_ext_targets(user) do
+  defp captured_ext_targets(user) do
     defined = MapSet.new(user, fn {m, {:function, n, a, _, _}} -> {m, n, a} end)
     bkeys = MapSet.new(Map.keys(builtins()))
 
@@ -1937,7 +1938,7 @@ defmodule Beam2Wasm do
     |> Enum.filter(fn mfa -> capture_wrap_body(mfa) != nil end)
   end
 
-  def capture_wrappers(user) do
+  defp capture_wrappers(user) do
     captured_ext_targets(user)
     |> Enum.map_join("\n", fn {m, f, a} ->
       ps = if a == 0, do: "", else: " " <> Enum.map_join(0..(a - 1), " ", &"(param $x#{&1} (ref null eq))")
@@ -1946,10 +1947,10 @@ defmodule Beam2Wasm do
   end
 
   # mode-aware body for a capturable inline BIF (mirrors the {:bif,...}/{:gc_bif,...} lowering); nil = unsupported.
-  def x(n), do: "(local.get $x#{n})"
-  def xi31(n), do: "(i31.get_s (ref.cast (ref i31) (local.get $x#{n})))"
+  defp x(n), do: "(local.get $x#{n})"
+  defp xi31(n), do: "(i31.get_s (ref.cast (ref i31) (local.get $x#{n})))"
 
-  def capture_wrap_body({:erlang, :abs, 1}) do
+  defp capture_wrap_body({:erlang, :abs, 1}) do
     if Process.get(:bignum),
       do:
         "(if (result (ref null eq)) (i32.lt_s (call $int_cmp #{x(0)} (ref.i31 (i32.const 0))) (i32.const 0)) (then (call $int_sub (ref.i31 (i32.const 0)) #{x(0)})) (else #{x(0)}))",
@@ -1957,23 +1958,23 @@ defmodule Beam2Wasm do
         "(ref.i31 (select (i32.sub (i32.const 0) #{xi31(0)}) #{xi31(0)} (i32.lt_s #{xi31(0)} (i32.const 0))))"
   end
 
-  def capture_wrap_body({:erlang, :byte_size, 1}),
+  defp capture_wrap_body({:erlang, :byte_size, 1}),
     do: "(ref.i31 (array.len (struct.get $binary 0 (ref.cast (ref $binary) #{x(0)}))))"
 
-  def capture_wrap_body({:erlang, :bit_size, 1}),
+  defp capture_wrap_body({:erlang, :bit_size, 1}),
     do:
       "(ref.i31 (i32.shl (array.len (struct.get $binary 0 (ref.cast (ref $binary) #{x(0)}))) (i32.const 3)))"
 
-  def capture_wrap_body({:erlang, :map_size, 1}), do: "(ref.i31 (call $map_size #{x(0)}))"
+  defp capture_wrap_body({:erlang, :map_size, 1}), do: "(ref.i31 (call $map_size #{x(0)}))"
 
-  def capture_wrap_body({:erlang, :tuple_size, 1}),
+  defp capture_wrap_body({:erlang, :tuple_size, 1}),
     do: "(ref.i31 (array.len (ref.cast (ref $tuple) #{x(0)})))"
 
-  def capture_wrap_body({:erlang, :length, 1}), do: "(ref.i31 (call $list_len #{x(0)}))"
-  def capture_wrap_body({:erlang, :hd, 1}), do: "(struct.get $cons 0 (ref.cast (ref $cons) #{x(0)}))"
-  def capture_wrap_body({:erlang, :tl, 1}), do: "(struct.get $cons 1 (ref.cast (ref $cons) #{x(0)}))"
+  defp capture_wrap_body({:erlang, :length, 1}), do: "(ref.i31 (call $list_len #{x(0)}))"
+  defp capture_wrap_body({:erlang, :hd, 1}), do: "(struct.get $cons 0 (ref.cast (ref $cons) #{x(0)}))"
+  defp capture_wrap_body({:erlang, :tl, 1}), do: "(struct.get $cons 1 (ref.cast (ref $cons) #{x(0)}))"
 
-  def capture_wrap_body({:erlang, op, 2}) when op in [:band, :bor, :bxor, :bsl, :bsr] do
+  defp capture_wrap_body({:erlang, op, 2}) when op in [:band, :bor, :bxor, :bsl, :bsr] do
     cond do
       Process.get(:bignum) ->
         "(call $int_#{op} #{x(0)} #{x(1)})"
@@ -1987,12 +1988,12 @@ defmodule Beam2Wasm do
   end
 
   # comparison operators captured as funs (Enum.max/min/sort default comparators): &>=/2, &</2, …
-  def capture_wrap_body({:erlang, op, 2}) when op in [:"=:=", :==, :"=/=", :"/=", :<, :>, :>=, :"=<"] do
+  defp capture_wrap_body({:erlang, op, 2}) when op in [:"=:=", :==, :"=/=", :"/=", :<, :>, :>=, :"=<"] do
     "(if (result (ref null eq)) #{bool_cmp(op, {:x, 0}, {:x, 1})} (then (global.get $atom_true)) (else (global.get $atom_false)))"
   end
 
   # arithmetic operators captured as funs (Enum.sum/product default reducers): &+/2, &*/2, …
-  def capture_wrap_body({:erlang, op, 2}) when op in [:+, :-, :*, :div, :rem] do
+  defp capture_wrap_body({:erlang, op, 2}) when op in [:+, :-, :*, :div, :rem] do
     cond do
       Process.get(:float) and op in [:+, :-, :*] -> "(call $num_#{bif(op)} #{x(0)} #{x(1)})"
       Process.get(:bignum) -> "(call $int_#{bif(op)} #{x(0)} #{x(1)})"
@@ -2001,44 +2002,44 @@ defmodule Beam2Wasm do
   end
 
   # type-test BIFs captured as predicates (&is_list/1 — Stream/zip uses it via :lists.all): atom true/false
-  def capture_wrap_body({:erlang, tb, 1})
-      when tb in [
-             :is_atom,
-             :is_binary,
-             :is_bitstring,
-             :is_tuple,
-             :is_map,
-             :is_pid,
-             :is_reference,
-             :is_function,
-             :is_float,
-             :is_port,
-             :is_integer,
-             :is_list,
-             :is_boolean
-           ] do
+  defp capture_wrap_body({:erlang, tb, 1})
+       when tb in [
+              :is_atom,
+              :is_binary,
+              :is_bitstring,
+              :is_tuple,
+              :is_map,
+              :is_pid,
+              :is_reference,
+              :is_function,
+              :is_float,
+              :is_port,
+              :is_integer,
+              :is_list,
+              :is_boolean
+            ] do
     "(if (result (ref null eq)) #{type_test_i32(tb, x(0))} (then (global.get $atom_true)) (else (global.get $atom_false)))"
   end
 
-  def capture_wrap_body(_), do: nil
+  defp capture_wrap_body(_), do: nil
 
   # every {mod, fun, arity} reached by a direct/external call (for auto-stubbing undefined fns)
-  def called_funs(user) do
+  defp called_funs(user) do
     user
     |> Enum.flat_map(fn {_mod, {:function, _, _, _, is}} -> Enum.flat_map(is, &call_refs/1) end)
     |> Enum.uniq()
   end
 
-  def call_refs({:call, _, {m, f, a}}), do: [{m, f, a}]
-  def call_refs({:call_only, _, {m, f, a}}), do: [{m, f, a}]
-  def call_refs({:call_last, _, {m, f, a}, _}), do: [{m, f, a}]
-  def call_refs({:call_ext, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
-  def call_refs({:call_ext_only, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
-  def call_refs({:call_ext_last, _, {:extfunc, m, f, a}, _}), do: [{m, f, a}]
-  def call_refs(_), do: []
+  defp call_refs({:call, _, {m, f, a}}), do: [{m, f, a}]
+  defp call_refs({:call_only, _, {m, f, a}}), do: [{m, f, a}]
+  defp call_refs({:call_last, _, {m, f, a}, _}), do: [{m, f, a}]
+  defp call_refs({:call_ext, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
+  defp call_refs({:call_ext_only, _, {:extfunc, m, f, a}}), do: [{m, f, a}]
+  defp call_refs({:call_ext_last, _, {:extfunc, m, f, a}, _}), do: [{m, f, a}]
+  defp call_refs(_), do: []
 
   # arities used by apply/apply_last -> need a generated $apply_N dispatch
-  def apply_arities(user) do
+  defp apply_arities(user) do
     used =
       user
       |> Enum.flat_map(fn {_m, {:function, _, _, _, is}} ->
@@ -2071,7 +2072,7 @@ defmodule Beam2Wasm do
   # 339 clauses for Jason's arity-2 protocol dispatch, on the hot path per encoded value), we form
   # an i64 key = mod_idx*MUL + fun_idx from the interned atom indices and BINARY-SEARCH it: ~log2(N)
   # comparisons. Unknown pair falls through to unreachable.
-  def gen_apply(n, user) do
+  defp gen_apply(n, user) do
     params =
       if(n == 0, do: "", else: " " <> Enum.map_join(0..(n - 1), " ", &"(param $a#{&1} (ref null eq))")) <>
         " (param $mod (ref null eq)) (param $fun (ref null eq))"
@@ -2105,10 +2106,10 @@ defmodule Beam2Wasm do
   end
 
   # balanced binary-search tree over sorted {key, call} clauses; each leaf is an exact-key guard.
-  def bisect_apply([]), do: ""
-  def bisect_apply([{k, call}]), do: "    (if (i64.eq (local.get $key) (i64.const #{k})) (then #{call}))"
+  defp bisect_apply([]), do: ""
+  defp bisect_apply([{k, call}]), do: "    (if (i64.eq (local.get $key) (i64.const #{k})) (then #{call}))"
 
-  def bisect_apply(clauses) do
+  defp bisect_apply(clauses) do
     mid = div(length(clauses), 2)
     {left, right} = Enum.split(clauses, mid)
     pivot = elem(hd(right), 0)
@@ -2116,7 +2117,7 @@ defmodule Beam2Wasm do
     "    (if (i64.lt_u (local.get $key) (i64.const #{pivot}))\n      (then\n#{bisect_apply(left)})\n      (else\n#{bisect_apply(right)}))"
   end
 
-  def helper_apply_clauses(1, aidx, mul, args) do
+  defp helper_apply_clauses(1, aidx, mul, args) do
     for {m, f, wat} <- [
           {:erlang, :exit, "$erlang.exit_1"},
           {:maps, :from_list, "$maps.from_list_1"},
@@ -2128,12 +2129,12 @@ defmodule Beam2Wasm do
     end
   end
 
-  def helper_apply_clauses(_n, _aidx, _mul, _args), do: []
+  defp helper_apply_clauses(_n, _aidx, _mul, _args), do: []
 
   # apply_N clauses for CAPTURED ext functions (`&abs/1`, `&Tuple.to_list/1`, `&band/2`): a literal
   # fun applied via the trampoline lands in apply_N keyed on (mod,fun). Route each captured ext MFA of
   # arity n — that isn't a user function but has a builtin shim or a synthesized capture wrapper — to it.
-  def ext_capture_clauses(n, user, aidx, mul, args) do
+  defp ext_capture_clauses(n, user, aidx, mul, args) do
     defined = MapSet.new(user, fn {m, {:function, nm, a, _, _}} -> {m, nm, a} end)
     bkeys = MapSet.new(Map.keys(builtins()))
     wraps = MapSet.new(captured_ext_targets(user))
@@ -2157,9 +2158,9 @@ defmodule Beam2Wasm do
     end)
   end
 
-  def fq_b({m, f, a}), do: fq(m, f, a)
+  defp fq_b({m, f, a}), do: fq(m, f, a)
 
-  def call_fun_arities(user) do
+  defp call_fun_arities(user) do
     user
     |> Enum.flat_map(fn {_mod, {:function, _, _, _, is}} ->
       Enum.flat_map(is, fn
@@ -2171,23 +2172,23 @@ defmodule Beam2Wasm do
     |> Enum.uniq()
   end
 
-  def atoms_in({:literal, term}), do: term_atoms(term)
-  def atoms_in({:atom, a}), do: [a]
-  def atoms_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&atoms_in/1)
-  def atoms_in(l) when is_list(l), do: Enum.flat_map(l, &atoms_in/1)
-  def atoms_in(_), do: []
+  defp atoms_in({:literal, term}), do: term_atoms(term)
+  defp atoms_in({:atom, a}), do: [a]
+  defp atoms_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&atoms_in/1)
+  defp atoms_in(l) when is_list(l), do: Enum.flat_map(l, &atoms_in/1)
+  defp atoms_in(_), do: []
 
-  def term_atoms(a) when is_atom(a), do: [a]
+  defp term_atoms(a) when is_atom(a), do: [a]
   # Map.to_list (not Enum) — a struct literal (e.g. a Range) is Enumerable; Enum would iterate
   # it as a SEQUENCE, not key/value pairs. Map.to_list always treats it as a raw map.
-  def term_atoms(m) when is_map(m),
+  defp term_atoms(m) when is_map(m),
     do: Map.to_list(m) |> Enum.flat_map(fn {k, v} -> term_atoms(k) ++ term_atoms(v) end)
 
-  def term_atoms(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&term_atoms/1)
-  def term_atoms(l) when is_list(l), do: Enum.flat_map(l, &term_atoms/1)
-  def term_atoms(_), do: []
+  defp term_atoms(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&term_atoms/1)
+  defp term_atoms(l) when is_list(l), do: Enum.flat_map(l, &term_atoms/1)
+  defp term_atoms(_), do: []
 
-  def const_globals do
+  defp const_globals do
     Process.get(:const_defs, [])
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map_join("\n", fn {idx, expr} -> "  (global $const#{idx} (ref null eq) #{expr})" end)

@@ -20,6 +20,9 @@ _build/
 deps/
 *.ez
 erl_crash.dump
+doc/
+cover/
+mix.lock.backup
 
 # Cloudflare / Durable Object local runtime state (never source)
 .wrangler/

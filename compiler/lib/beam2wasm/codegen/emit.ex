@@ -1992,9 +1992,7 @@ defmodule Beam2Wasm.Codegen.Emit do
       {id, st} = add_node(st, :u64, {:nop, na, na})
       {:ok, %{st | regs: Map.put(st.regs, dst, id)}}
     else
-      bad ->
-        if System.get_env("FUSEDBG"), do: IO.inspect({:rem_pow64, a, bad}, label: "FUSE MISS", limit: 12)
-        :no
+      _ -> :no
     end
   end
 
@@ -2005,11 +2003,7 @@ defmodule Beam2Wasm.Codegen.Emit do
       {id, st} = add_node(st, dom, {wop, na, nb})
       {:ok, %{st | regs: Map.put(st.regs, dst, id)}}
     else
-      bad ->
-        if System.get_env("FUSEDBG"),
-          do: IO.inspect({o, a, b, bad}, label: "FUSE MISS", limit: 12, width: 140)
-
-        :no
+      _ -> :no
     end
   end
 

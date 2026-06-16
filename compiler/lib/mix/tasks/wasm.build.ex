@@ -248,8 +248,7 @@ defmodule Mix.Tasks.Wasm.Build do
 
   defp emit_worker(out, app, exports) do
     manifest =
-      exports
-      |> Enum.map(fn spec ->
+      Enum.map_join(exports, ", ", fn spec ->
         [name, sig] = String.split(spec, ":", parts: 2)
         [args_s, ret] = String.split(sig, "->")
         args = if String.trim(args_s) == "", do: [], else: String.split(args_s, ",", trim: true)
@@ -263,7 +262,6 @@ defmodule Mix.Tasks.Wasm.Build do
 
         ~s|"#{String.trim(name)}": {"args": [#{Enum.map_join(args, ",", &~s|"#{String.trim(&1)}"|)}], "ret": "#{String.trim(ret)}"}|
       end)
-      |> Enum.join(", ")
 
     File.write!(Path.join(out, "worker.mjs"), worker_template(app, manifest))
     File.cp!(Path.join(:code.priv_dir(:beam2wasm), "imports.mjs"), Path.join(out, "imports.mjs"))
