@@ -7,7 +7,7 @@ enumerated inventory; only §1 contains legitimate "can't"s, and even most of th
 answers.
 
 Evidence base (all bit-exact vs the VM, one command: `elixir verify.exs`):
-conformance **203/203** · fuzz **33/33** · gaps **20/20 provably correct** · API scoreboard
+conformance **219/219** · fuzz **33/33** · gaps **20/20 provably correct** · API scoreboard
 **389/389 (100%)** of all 392 public functions of ten stdlib modules (3 remaining are
 `@nondet` — random/shuffle, where equality is not defined) · **genfuzz** (generative random
 programs over the full term algebra) · **regexdiff** (the regex-shim corpus: 76 cases, 0 lies)
@@ -162,8 +162,7 @@ runtime-variable `receive … after`, per-process reduction budgets, `unique_int
 byte-identical (see `demo/markdown/`). The §3 inventory above has been largely BURNED DOWN: the
 error/raise machinery, term primitives, full Regex surface, dynamic-atom lookups
 (`*_to_existing_atom` over the closed-world table), float→text formatting, the effects ABI, the
-OTP-27 map cursor, and sub-byte bitstring match/construct are all built and verified. The scoreboard
-stands at **296/299 (99.0%)** with nine of ten modules perfect.
+OTP-27 map cursor, and sub-byte bitstring match/construct are all built and verified.
 
 **BUILT — bitstring values (the final class):** a distinct `$bitstr` type (bytes + bit-length;
 `is_binary(<<1::4>>)` correctly false), match contexts carry an end-bit, sub-byte `:binary`
@@ -171,7 +170,7 @@ extraction, bit-mode construction with dynamic sizes and bitstring-append, littl
 both directions, and bitstring literals. `Float.round/ceil/floor` run the REAL IEEE
 bit-decomposition (the old precision-0-only shim and its DCE bypass were deleted), and gaps p18's
 10-bit packed protocol is provably correct. **The §3 inventory is now empty of known classes:**
-gaps 20/20, scoreboard 299/299 (100.0%).
+gaps 20/20, scoreboard 389/389 (100.0%).
 
 ---
 
@@ -184,8 +183,7 @@ gaps 20/20, scoreboard 299/299 (100.0%).
 3. **LIVE: the stdlib API scoreboard** (`scoreboard/run.exs`, results in `scoreboard/SCOREBOARD.md`) —
    every public function of every roster module via `Module.__info__(:functions)`, concrete calls
    generated from a typed input pool, diffed Wasm vs VM through identical checksums. Current:
-   **272/299 bit-exact (91.0%)** across 392 public functions of Enum/List/Map/Keyword/Tuple/Integer/
-   String/Range/MapSet/Float (93 awaiting input-pool generation). The 27 failures independently
-   re-derive §3's inventory: Float/Ryu formatting (7), Stream (3), dynamic atoms (2), `Map.pop`
-   family (5), MapSet-v2 internals (2), unicode-normalize (1)… This document's §3 is now a
-   **shrinking measured number per release** — the direct measurement of "any pure Elixir runs."
+   **389/389 bit-exact (100.0%)** across the 392 public functions of Enum/List/Map/Keyword/Tuple/
+   Integer/String/Range/MapSet/Float — the 3 not counted are `@nondet` (random/shuffle, where
+   equality is not defined). This document's §3 is a **measured number per release** — the direct
+   measurement of "any pure Elixir runs" — and it currently stands empty of known classes.

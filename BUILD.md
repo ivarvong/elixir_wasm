@@ -26,12 +26,17 @@ Notes:
 ## Repo layout
 
 ```
-elixir-wasm-edge/
-  README.md            ARCHITECTURE.md   ROADMAP.md   BUILD.md
-  compiler/            beam2wasm.exs + README + examples/  (the BEAM→WasmGC compiler)
-  attic/durable-object/      worker.js + config.capnp + account_aot.wasm  (DO on workerd)
-  attic/measurements/        the 3 runtime-guarantee docs + reproducible harnesses
-  attic/spikes/              substrate validation + feasibility gate + evals + Workflows spec
+elixir_wasm/
+  README.md  ARCHITECTURE.md  ROADMAP.md  BUILD.md  LIMITATIONS.md
+  verify.exs           the one-command differential manifest (pinned floors)
+  compiler/            the BEAM→WasmGC compiler (Mix package: mix wasm.build) + examples/
+  runtime/             shared host imports (imports.mjs), JSPI scheduler, deep-stack helper
+  conformance/ fuzz/ gaps/ genfuzz/ regexdiff/ scoreboard/   the differential suites
+  perf/                measurement harnesses (constant factors, scaling exponents)
+  demo/                deployed examples: markdown (Jason+Earmark), durable-sql, effects
+  durable-genserver/   the compiled GenServer in a Durable Object (config.capnp on workerd)
+  interp/              the BEAM-interpreter tier seed (roadmap)
+  attic/               preserved history — superseded spikes/measurements, nothing live
 ```
 
 ## Reproduce: compile & run an Elixir program
@@ -58,31 +63,30 @@ node --experimental-wasm-jspi examples/runaccount.mjs account.wasm
 ## Reproduce: the Durable Object on workerd
 
 ```bash
-cd durable-object
-mkdir -p state
-workerd serve config.capnp        # serves http://127.0.0.1:8791 ; DO state persists to ./state
-curl 'http://127.0.0.1:8791/?id=alice&event=new&amount=100'
-curl 'http://127.0.0.1:8791/?id=alice&event=deposit&amount=50'      # 150
-curl 'http://127.0.0.1:8791/?id=alice&event=freeze'
-curl 'http://127.0.0.1:8791/?id=alice&event=deposit&amount=1000'    # ignored (frozen)
-# kill workerd, re-run `workerd serve config.capnp`, then GET ?id=alice -> state survived on disk
+cd durable-genserver
+workerd serve config.capnp        # serves http://127.0.0.1:8797 ; DO state persists to ./state
+curl 'http://127.0.0.1:8797/?acct=alice&op=balance'                # {"reply":100,"balance":100}
+curl 'http://127.0.0.1:8797/?acct=alice&op=deposit&amount=50'      # 150
+curl 'http://127.0.0.1:8797/?acct=alice&op=withdraw&amount=30'     # 120
+curl 'http://127.0.0.1:8797/?acct=alice&op=withdraw&amount=999'    # {"reply":":insufficient"} (compiled guard)
+# kill workerd, re-run `workerd serve config.capnp`, then GET ?acct=alice -> state survived on disk
 ```
 
-`config.capnp` binds `account.wasm` as a module, declares the `Account` DO namespace, and uses
-`durableObjectStorage = (localDisk = "do-disk")` for on-disk (restart-surviving) persistence.
+`config.capnp` binds `bank.wasm` as a module, declares the `Bank` GenServer DO namespace, and persists
+per-actor state to SQLite-backed Durable Object storage (restart-surviving).
 
 ## Reproduce: the three measurements
 
 ```bash
-cd measurements
+cd attic/measurements
 # 1. cold start (compile + instantiate, size→time curve)
 node --experimental-wasm-jspi bench_coldstart.mjs <wasm files…>
 # 2. preemption (overhead + interleaving) — needs REDS-mode modules:
-#    REDS=2000000000 elixir ../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_count.wat  (never yields)
-#    REDS=50000      elixir ../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_yield.wat  (yields)
+#    REDS=2000000000 elixir ../../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_count.wat  (never yields)
+#    REDS=50000      elixir ../../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_yield.wat  (yields)
 node --experimental-wasm-jspi preempt.mjs
 # 3. exact integers — needs a BIGNUM-mode module:
-#    BIGNUM=1 elixir ../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_big.wat
+#    BIGNUM=1 elixir ../../compiler/beam2wasm.exs Elixir.Smoke.beam > smoke_big.wat
 node --experimental-wasm-jspi bignum.mjs
 ```
 

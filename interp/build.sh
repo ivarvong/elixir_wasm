@@ -3,7 +3,7 @@
 # our runtime, executing a .beam (target.ex) that we NEVER AOT-compiled — bit-exact with the VM.
 set -euo pipefail
 cd "$(dirname "$0")"
-NODE="${NODE:-/Users/ivar/.nvm/versions/node/v24.16.0/bin/node}"
+NODE="${NODE:-node}"   # override with NODE=/path/to/node (needs the 24.x line; see BUILD.md)
 
 elixirc target.ex                                  # the program to RUN (becomes data, not code)
 elixir gen_code.exs Elixir.Target.beam > prog.ex   # decode target.beam -> Prog.code() (a constant term)

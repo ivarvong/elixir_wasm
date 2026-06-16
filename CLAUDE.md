@@ -29,9 +29,9 @@ When a real pure-Elixir program traps on an unsupported function or compiler gap
 Every change is proven bit-exact vs the VM and kept suite-safe. ONE command runs the whole
 manifest with pinned floors (exit 1 on any drop):
 ```
-elixir verify.exs        # conformance 198/198 · fuzz 33/33 · gaps 20/20 · genfuzz 12/12 ·
-                         # regexdiff 0 lies · scoreboard 389/389 · markdown 3/3 · effects — ~2.5 min
-elixir verify.exs fast   # skips the slow suites (scoreboard, markdown)
+elixir verify.exs        # conformance 219/219 · fuzz 33/33 · gaps 20/20 · genfuzz 12/12 ·
+                         # regexdiff 0 lies · scoreboard 389/389 · markdown 3/3 · effects — ~15 min
+elixir verify.exs fast   # skips the slow suites (scoreboard, markdown) — ~12 min
 ```
 Suites can still be run individually (`cd conformance && elixir run.exs` etc.). When a suite
 GROWS, raise its floor in verify.exs as part of the change. Pin the toolchain Node for faithful

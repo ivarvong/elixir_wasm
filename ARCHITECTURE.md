@@ -1,8 +1,8 @@
 # Architecture & design decisions
 
 This is the *why*. It captures the design of the runtime and every standing decision made during design,
-with rationale, so the build team inherits intent rather than reconstructing it. Each decision is tagged
-`[D]`. Where the prototype validated or revised a decision, that is noted.
+with rationale, so contributors inherit intent rather than reconstructing it from code. Each decision is
+tagged `[D]`. Where the prototype validated or revised a decision, that is noted.
 
 ---
 

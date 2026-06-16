@@ -1,9 +1,0 @@
-** (ArithmeticError) bad argument in arithmetic expression: nil + nil
-    :erlang.+(nil, nil)
-    (elixir 1.17.1) lib/enum.ex:4415: Enum.reduce_range/5
-    (elixir 1.17.1) lib/enum.ex:2535: Enum.flat_map/2
-    (elixir 1.17.1) lib/enum.ex:4353: Enum.flat_map_list/2
-    (elixir 1.17.1) lib/enum.ex:4354: Enum.flat_map_list/2
-    (elixir 1.17.1) lib/enum.ex:4353: Enum.flat_map_list/2
-    (elixir 1.17.1) lib/enum.ex:4354: Enum.flat_map_list/2
-    (elixir 1.17.1) lib/enum.ex:4353: Enum.flat_map_list/2

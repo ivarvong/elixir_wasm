@@ -61,7 +61,7 @@ change proves itself bit-exact against the real VM before it lands:
 
 | suite | what it proves | floor |
 |---|---|---|
-| `conformance/` | curated per-feature cases, every term type and runtime mode | 203/203 |
+| `conformance/` | curated per-feature cases, every term type and runtime mode | 219/219 |
 | `fuzz/` | a randomized ledger service, rolling-hash diff vs the VM | 33/33 |
 | `gaps/` | 20 realistic programs, **0 stubs = provably supported** | 20/20 |
 | `genfuzz/` | *generated random programs* over the whole term algebra | 12/12 (+40/40 sweeps) |

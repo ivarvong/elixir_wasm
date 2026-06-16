@@ -446,6 +446,10 @@ export const memFsBacking = (files = new Map()) => ({
 });
 
 // Real-filesystem backing (Node host). `nodeFs` = require("node:fs") injected by the runner.
+// ⚠ SECURITY: grants the compiled module FULL host filesystem authority — the path comes
+// straight from guest code with NO root confinement, `..` normalization, or allowlist.
+// Wire this ONLY to trusted modules. For untrusted code use memFsBacking, or wrap this with
+// your own realpath-confinement to a fixed prefix. See SECURITY.md ("Capability model").
 export const nodeFsBacking = (nodeFs) => ({
   read: (path) => {
     try { return new Uint8Array(nodeFs.readFileSync(path)); }
@@ -528,6 +532,10 @@ export const makeSql = (getExports, backing) => {
 
 // node:sqlite backing — `db` is a DatabaseSync; .all() executes ANY statement and returns
 // its rows ([] for non-returning statements), so one path covers DDL/DML/SELECT.
+// ⚠ SECURITY: executes ANY statement the guest emits (incl. DDL / PRAGMA / ATTACH) against the
+// given database — no statement allowlist or read-only mode. The values are parameterized (no
+// injection via params), but the SQL text itself is guest-controlled. Wire only to trusted
+// modules, or give an isolated/read-only DB. Same caveat applies to doSqliteBacking below.
 export const nodeSqliteBacking = (db) => (sql, paramsJson) =>
   JSON.stringify(db.prepare(sql).all(...JSON.parse(paramsJson)));
 

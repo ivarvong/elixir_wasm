@@ -145,6 +145,27 @@ defmodule Tooling do
   end
 
   @doc """
+  Resolve the `workerd` binary (Cloudflare's Workers runtime, used by the prod-gate
+  smoke tests). Order: $WORKERD, then PATH, then a repo-local `node_modules/.bin/workerd`
+  (`npm i -D workerd`). Raises with an actionable message on failure.
+
+  `root` is the directory whose `node_modules` to check (defaults to the cwd).
+  """
+  def workerd!(root \\ ".") do
+    System.get_env("WORKERD") || System.find_executable("workerd") ||
+      local_workerd(root) ||
+      fail("""
+      workerd not found. Install it (`npm i -D workerd`, which provides
+      node_modules/.bin/workerd) and/or set WORKERD=/path/to/workerd.
+      """)
+  end
+
+  defp local_workerd(root) do
+    path = Path.join([root, "node_modules", ".bin", "workerd"])
+    if File.exists?(path), do: path, else: nil
+  end
+
+  @doc """
   Canonical `wasm-as` argument list. `-all` enables the GC/i31/EH/tail-call feature
   set the compiler emits; `--disable-custom-descriptors` suppresses the "exact" heap
   types that newer Binaryen emits under `-all` but stock Node #{@min_node_major} rejects

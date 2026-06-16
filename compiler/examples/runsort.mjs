@@ -1,5 +1,8 @@
 import fs from "node:fs";
-const { instance } = await WebAssembly.instantiate(new Uint8Array(fs.readFileSync(process.argv[2])), {});
+import { makeBig } from "../../runtime/imports.mjs";
+// The compiler emits `big.*` host imports for the integer tiers (i31 -> i64 -> host bignum);
+// makeBig() is the canonical backing the whole repo uses (see runtime/imports.mjs).
+const { instance } = await WebAssembly.instantiate(new Uint8Array(fs.readFileSync(process.argv[2])), { big: makeBig() });
 const e = instance.exports;
 const toWasm = arr => arr.reduceRight((l, x) => e.cons(x, l), e.nil());
 const toJs = l => { const o = []; while (e.is_cons(l)) { o.push(e.head(l)); l = e.tail(l); } return o; };

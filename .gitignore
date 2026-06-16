@@ -3,6 +3,8 @@ _work/
 _work*/
 **/_work/
 **/_work*/
+work/
+*.err
 
 # Build artifacts
 *.beam
@@ -18,3 +20,16 @@ _build/
 deps/
 *.ez
 erl_crash.dump
+
+# Cloudflare / Durable Object local runtime state (never source)
+.wrangler/
+**/state/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local agent/editor harness state
+.claude/
+
+# Hex build output
+*.tar

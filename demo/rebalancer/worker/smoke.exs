@@ -4,17 +4,18 @@
 # workerd (the same runtime Cloudflare runs), and assert every verify/cases.exs request comes
 # back byte-identical to the real Elixir VM over HTTP. Then `npx wrangler deploy` ships the
 # exact same files.
+#
+#   elixir smoke.exs        (workerd via WORKERD env, PATH, or ./node_modules/.bin/workerd)
+Code.require_file("../../../tooling.exs", __DIR__)
+
 defmodule RebalancerSmoke do
   @here Path.dirname(__ENV__.file)
   @app Path.join(@here, "../app")
   @priv Path.join(@here, "../../../compiler/priv")
   @port 8797
-  @workerd System.get_env("WORKERD") || "/Users/ivar/code/node_modules/.bin/workerd"
+  @workerd Tooling.workerd!()
 
   def main do
-    unless File.exists?(@workerd),
-      do: (IO.puts("❌ workerd not found at #{@workerd} (set WORKERD=)"); System.halt(1))
-
     :inets.start()
     build()
     cases = load_cases()

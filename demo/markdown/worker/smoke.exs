@@ -4,7 +4,7 @@
 # then measure end-to-end request latency. This is the last verification step before a real
 # `wrangler deploy` — same module, same worker script, same config shape.
 #
-#   elixir smoke.exs        (workerd path via WORKERD env or the repo default)
+#   elixir smoke.exs        (workerd via WORKERD env, PATH, or ./node_modules/.bin/workerd)
 Code.require_file("../../../tooling.exs", __DIR__)
 
 defmodule WorkerSmoke do
@@ -14,11 +14,10 @@ defmodule WorkerSmoke do
   @beam2wasm Path.join(@here, "../../../compiler/beam2wasm.exs")
   @imports Path.join(@here, "../../../runtime/imports.mjs")
   @port 8796
-  @workerd System.get_env("WORKERD") || "/Users/ivar/code/node_modules/.bin/workerd"
+  @workerd Tooling.workerd!()
   @wasmas Tooling.wasmas!()
 
   def main do
-    unless File.exists?(@workerd), do: (IO.puts("❌ workerd not found at #{@workerd} (set WORKERD=)"); System.halt(1))
     :inets.start()
     build()
     expected = vm_expected()
