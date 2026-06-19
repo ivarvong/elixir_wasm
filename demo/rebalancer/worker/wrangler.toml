@@ -1,0 +1,20 @@
+# Deploy the compiled-Elixir portfolio rebalancer to real Cloudflare Workers:
+#
+#   cd worker
+#   elixir smoke.exs            # 1. builds rebalancer.wasm + stages host/imports + workerd gate
+#   npx wrangler deploy         # 2. ship it
+#
+# The same files workerd served locally are what wrangler ships — no translation step.
+name = "elixir-rebalancer"
+main = "worker.mjs"
+compatibility_date = "2026-06-01"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true
+
+# Workers Logs: retained, queryable invocation logs (incl. CPU time) in the dashboard —
+# https://dash.cloudflare.com -> Workers & Pages -> elixir-rebalancer -> Logs
+[observability]
+enabled = true

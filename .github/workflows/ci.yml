@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main, oss-release-prep]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast gate: formatting, linting, and the package's own ExUnit suite. Pure-Elixir,
+  # no exotic toolchain — this is the gate that must always be green.
+  lint-test:
+    name: format · credo · mix test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang/Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.0"
+          elixir-version: "1.17.1-otp-27"
+
+      - name: Cache deps & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix credo
+      - run: mix test
+      # Dialyzer: PLT is built into _build (cached above); first cold run ~1 min.
+      - run: mix dialyzer
+
+  # Differential gate: the real proof — every suite run bit-exact against the Elixir VM.
+  # `verify.exs fast` runs the 6 suites that need only Node 24 + Binaryen (conformance,
+  # fuzz, gaps, genfuzz, regexdiff, effects); the workerd-backed suites (scoreboard,
+  # markdown) are gated separately. See verify.exs and BUILD.md.
+  verify:
+    name: verify.exs (differential vs the VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Erlang/Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.0"
+          elixir-version: "1.17.1-otp-27"
+
+      - name: Set up Node.js 24 (JSPI + WasmGC)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+
+      - name: Install Binaryen (wasm-as) version_130
+        run: |
+          set -euo pipefail
+          curl -fsSL -o binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz
+          tar xzf binaryen.tar.gz
+          echo "WASM_AS=$GITHUB_WORKSPACE/binaryen-version_130/bin/wasm-as" >> "$GITHUB_ENV"
+          echo "NODE=$(command -v node)" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain
+        run: |
+          node --version
+          "$WASM_AS" --version
+          elixir --version
+
+      - name: Run the differential manifest
+        run: elixir verify.exs fast

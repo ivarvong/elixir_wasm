@@ -1,0 +1,10 @@
+# Python over HTTP, interpreted by compiled Elixir on WasmGC:
+#   curl -s -X POST https://elixir-python.<acct>.workers.dev --data-binary 'print(2**100)'
+name = "elixir-python"
+main = "worker.mjs"
+compatibility_date = "2026-06-01"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true

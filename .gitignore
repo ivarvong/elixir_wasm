@@ -1,0 +1,38 @@
+# Generated harness artifacts
+_work/
+_work*/
+**/_work/
+**/_work*/
+work/
+*.err
+
+# Build artifacts
+*.beam
+*.wasm
+*.wat
+*.cpuprofile
+
+# Dependencies
+node_modules/
+
+# Elixir
+_build/
+deps/
+*.ez
+erl_crash.dump
+doc/
+cover/
+mix.lock.backup
+
+# Cloudflare / Durable Object local runtime state (never source)
+.wrangler/
+**/state/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local agent/editor harness state
+.claude/
+
+# Hex build output
+*.tar
