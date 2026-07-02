@@ -25,8 +25,13 @@ import {
 const KEY = "pyex.wasm";
 const MAX_CODE = 65_536; // the lexer's per-char recursion depth is the platform stack bound
 const MAX_FILES_JSON = 1_048_576;
-const DEFAULT_STEPS = 5_000_000;
-const MAX_STEPS = 20_000_000;
+// V8 cannot collect WasmGC garbage while a synchronous wasm call is on the stack, so the
+// interpreter's per-step allocations accumulate for the whole pyrun — past ~400k steps that
+// hits the 128 MB isolate ceiling and the platform kills the isolate (a 1102, not a clean
+// Python error). Keep the cap below the death line so a runaway ALWAYS ends in pyex's own
+// LimitError (~600 ms at 300k): the sandbox refusing, not the platform collapsing.
+const DEFAULT_STEPS = 150_000;
+const MAX_STEPS = 300_000;
 
 const CORS = {
   "access-control-allow-origin": "*",

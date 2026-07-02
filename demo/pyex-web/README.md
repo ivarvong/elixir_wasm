@@ -18,9 +18,13 @@ two ways from one Cloudflare Worker:
   ```
 
   `text/plain` bodies are raw Python. Every run gets a fresh interpreter Ctx and
-  in-memory VFS; runaways die on their step budget (default 5M, cap 20M) with a
-  clean Python `LimitError`. The response carries the guest's OTel spans and the
-  resource footprint — the same observability the browser UI renders.
+  in-memory VFS; runaways die on their step budget (default 150k, cap 300k) with
+  a clean Python `LimitError`. The cap sits deliberately below the isolate's
+  memory death line: V8 can't collect WasmGC garbage during a synchronous wasm
+  call, so per-step allocations accumulate for the whole run — past ~400k steps
+  that hits the 128 MB isolate ceiling and the platform (not the sandbox) kills
+  the request. The response carries the guest's OTel spans and the resource
+  footprint — the same observability the browser UI renders.
 
 ## Layout
 
