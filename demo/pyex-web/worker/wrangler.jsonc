@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pyex",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-06-20",
+
+  // index.html etc. are served as static assets; the Worker runs for everything else:
+  // /pyex.wasm streamed from R2 (browser path) and /api/* (server-side Python).
+  "assets": { "directory": "../app/dist", "binding": "ASSETS" },
+
+  // the interpreter for the BROWSER, served raw from R2 (edge compresses over the wire).
+  "r2_buckets": [{ "binding": "WASM", "bucket_name": "pyex-wasm" }],
+
+  // the interpreter for the API: ./pyex.wasm is bundled as a precompiled module binding
+  // (workerd forbids runtime WebAssembly.compile). Keep it in sync with the R2 object.
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+
+  "observability": { "enabled": true }
+}
