@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pyex — run general Python on WasmGC, like a real `python` binary.
+#
+#   cli/pyex script.py            # run a file
+#   cli/pyex -c "print(1+1)"      # run a snippet
+#   echo "print('hi')" | cli/pyex # run stdin
+#   REBUILD=1 cli/pyex ...        # force recompiling the interpreter (mix wasm.build)
+#
+# The interpreter is the real ivarvong/pyex compiled to WasmGC by `mix wasm.build` — configured
+# declaratively in pyex's mix.exs (module, exports, dependency sandbox boundary). No hand-rolled
+# build here: this just ensures the wasm exists, then runs your program through it.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+pyex="${PYEX_DIR:-/Users/ivar/code/pyex}"
+wasm="$pyex/wasm/pyex.wasm"
+
+# ---- resolve the Python source: -c <code> | <file.py> | stdin ----
+if [[ "${1:-}" == "-c" ]]; then src="${2:?-c needs a code string}"
+elif [[ -n "${1:-}" && "$1" != "-" ]]; then src="$(cat "$1")"
+else src="$(cat)"; fi
+
+node="${NODE:-$(ls "$HOME"/.nvm/versions/node/v24.*/bin/node 2>/dev/null | tail -1)}"
+[[ -z "$node" ]] && node="$(command -v node)"
+
+# ---- build the interpreter once (cached), via the declarative mix task ----
+if [[ -n "${REBUILD:-}" || ! -f "$wasm" ]]; then
+  echo "pyex: compiling the interpreter to WasmGC via 'mix wasm.build' (first run)…" >&2
+  ( cd "$pyex" && mix wasm.build --out wasm >/dev/null )
+fi
+
+exec "$node" "$root/cli/pyex-run.mjs" "$wasm" "$src"

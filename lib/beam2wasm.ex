@@ -188,11 +188,20 @@ defmodule Beam2Wasm do
 
     Process.put(:mapsfold, mapsfold?)
 
+    # Task.async/1 is shimmed synchronously (calls a $clos0 Fun) — gate it (needs $ftab+$clos0) and force $clos0.
+    task? =
+      Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+        Enum.any?(is, &match?({_, _, {:extfunc, Task, :async, 1}}, &1))
+      end)
+
+    Process.put(:task, task?)
+
     clos_ns =
       (Enum.map(clos_refs, fn {_m, _f, ar, nf} -> ar - nf end) ++
          call_fun_arities(user) ++
          tramp_ns ++
          if(mapsfold?, do: [3], else: []) ++
+         if(task?, do: [0], else: []) ++
          if(proc, do: [0], else: []) ++
          if(regex_replace?, do: [1, 2], else: []))
       |> Enum.uniq()
@@ -355,7 +364,10 @@ defmodule Beam2Wasm do
         :compact,
         :undef,
         :utf8,
-        :latin1
+        :latin1,
+        :timeout,
+        # returned by the :elixir_config.identifier_tokenizer/0 shim (atom inspection via Macro.classify_atom)
+        String.Tokenizer
       ] ++
         if(http_get?, do: [:body, :status, :__struct__, Req.Response], else: []) ++
         if(req_in_user,
@@ -409,7 +421,7 @@ defmodule Beam2Wasm do
             )
         end)
       end) or Enum.any?(collect_literal_funs(user), &match?({:erlang, :atom_to_binary, _}, &1)) or
-        to_string?(user) or crypto_hash?
+        to_string?(user) or crypto_hash? or System.get_env("ATOMNAMES") != nil
 
     Process.put(:atom_names, atom_names?)
     # String case mapping is genuinely table-backed -> delegate to the host (like math/big). Gated.
@@ -511,9 +523,19 @@ defmodule Beam2Wasm do
         end)
       end)
 
+    # :os.system_time/0 — wall-clock as a host effect (DateTime.utc_now, :timer, VFS mtimes lean on it).
+    os_systime? =
+      Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
+        Enum.any?(is, fn op ->
+          match?({_, _, {:extfunc, :os, :system_time, 0}}, op) or
+            match?({_, _, {:extfunc, :os, :system_time, 0}, _}, op)
+        end)
+      end)
+
     Process.put(:fs_shim, fs?)
     Process.put(:io_shim, io?)
     Process.put(:sql_shim, sql?)
+    Process.put(:os_systime, os_systime?)
     # :unicode NF* normalization -> host (JS String.prototype.normalize — same Unicode tables)
     uninorm? =
       Enum.any?(user, fn {_m, {:function, _, _, _, is}} ->
@@ -667,6 +689,7 @@ defmodule Beam2Wasm do
            else: []
          ) ++
          if(fs?, do: [{:file, :read_file, 1}, {:file, :write_file, 2}, {:file, :write_file, 3}], else: []) ++
+         if(os_systime?, do: [{:os, :system_time, 0}], else: []) ++
          if(sql?, do: [{:sql_host, :exec, 2}], else: []) ++
          if(fltparse?, do: [{:erlang, :binary_to_float, 1}, {:erlang, :list_to_float, 1}], else: []) ++
          if(fltfmt?,
@@ -681,7 +704,9 @@ defmodule Beam2Wasm do
          if(io?, do: [{IO, :puts, 1}, {IO, :puts, 2}, {IO, :warn, 1}], else: []) ++
          if(titlecase?, do: [{:string, :titlecase, 1}], else: []) ++
          if(http_get?, do: [{Req, :get!, 1}], else: []) ++
-         if(crypto_hash?, do: [{:crypto, :hash, 2}], else: []))
+         if(crypto_hash?, do: [{:crypto, :hash, 2}], else: []) ++
+         # start_process() provides these when process-mode is on (OTP 29 gen:call timeout timers).
+         if(Process.get(:proc), do: [{:erlang, :start_timer, 3}, {:erlang, :cancel_timer, 1}, {:erlang, :cancel_timer, 2}], else: []))
       |> MapSet.new()
 
     stubs =
@@ -784,6 +809,10 @@ defmodule Beam2Wasm do
       if(sql?,
         do:
           "  (import \"sql\" \"exec\" (func $host_sql_exec (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))",
+        else: ""
+      ),
+      if(os_systime?,
+        do: "  (import \"sys\" \"now\" (func $host_sys_now (result i64)))",
         else: ""
       ),
       if(io?,
@@ -1455,10 +1484,16 @@ defmodule Beam2Wasm do
   defp unconsolidated?(path) do
     {:beam_file, _, _, _, _, fns} = :beam_disasm.file(String.to_charlist(path))
 
+    # The runtime impl_for fallback that a CONSOLIDATED protocol drops: pre-1.20 it was
+    # Module.concat/1,2; Elixir 1.20 emits Protocol.__concat__/2 instead. Detect either — missing
+    # the 1.20 form made us treat the (still unconsolidated) stdlib protocol as consolidated, so
+    # dispatch fell through to the runtime concat and trapped (e.g. Enum.reduce_while over a Range).
     Enum.any?(fns, fn {:function, _n, _a, _e, is} ->
       Enum.any?(is, fn op ->
         match?({_, _, {:extfunc, Module, :concat, _}}, op) or
-          match?({_, _, {:extfunc, Module, :concat, _}, _}, op)
+          match?({_, _, {:extfunc, Module, :concat, _}, _}, op) or
+          match?({_, _, {:extfunc, Protocol, :__concat__, _}}, op) or
+          match?({_, _, {:extfunc, Protocol, :__concat__, _}, _}, op)
       end)
     end)
   end
@@ -1815,7 +1850,10 @@ defmodule Beam2Wasm do
       (import "proc" "pdict_put"    (func $pdict_put (param (ref null eq)) (param (ref null eq)) (result (ref null eq))))
       (import "proc" "spawn_opt"    (func $spawn_opt_raw (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (param i32) (result i32)))
       (import "proc" "demonitor"    (func $demonitor_raw (param i32)))
-      (import "proc" "alias_pid"    (func $alias_pid (param i32) (result i32)))\
+      (import "proc" "alias_pid"    (func $alias_pid (param i32) (result i32)))
+      ;; OTP 29 gen:call implements its call timeout with erlang:start_timer/3 (was `receive after`).
+      (import "proc" "start_timer"  (func $start_timer_raw (param i32) (param i32) (param (ref null eq)) (result i32)))
+      (import "proc" "cancel_timer" (func $cancel_timer_raw (param i32) (result i32)))\
     """
   end
 
@@ -1867,6 +1905,28 @@ defmodule Beam2Wasm do
       (func (export "make_down") (param $ref i32) (param $pid i32) (param $reason (ref null eq)) (result (ref null eq))
         (array.new_fixed $tuple 5 (global.get $atom_DOWN) (struct.new $ref (local.get $ref) (i32.const 0)) (global.get $atom_process) (struct.new $pid (local.get $pid)) (local.get $reason)))
       (func (export "get_normal") (result (ref null eq)) (global.get $atom_normal))
+      ;; the host builds a fired timer's message {:timeout, TimerRef, Msg} (atoms/refs live in Wasm).
+      (func (export "make_timeout") (param $ref i32) (param $msg (ref null eq)) (result (ref null eq))
+        (array.new_fixed $tuple 3 (global.get $atom_timeout) (struct.new $ref (local.get $ref) (i32.const 0)) (local.get $msg)))
+      ;; erlang:start_timer(Time, Dest, Msg) -> TimerRef. Time is a small int term; Dest a pid/name/ref.
+      (func $erlang.start_timer_3 (param $t (ref null eq)) (param $dest (ref null eq)) (param $msg (ref null eq)) (result (ref null eq))
+        (struct.new $ref
+          (call $start_timer_raw
+            (i31.get_s (ref.cast (ref i31) (local.get $t)))
+            (call $resolve_dest (local.get $dest))
+            (local.get $msg))
+          (i32.const 0)))
+      ;; erlang:cancel_timer(TimerRef) -> RemainingMs | false. false only if it had already fired.
+      (func $erlang.cancel_timer_1 (param $ref (ref null eq)) (result (ref null eq))
+        (local $r i32)
+        (local.set $r (call $cancel_timer_raw (struct.get $ref 0 (ref.cast (ref $ref) (local.get $ref)))))
+        (if (result (ref null eq)) (i32.lt_s (local.get $r) (i32.const 0))
+          (then (global.get $atom_false)) (else (ref.i31 (local.get $r)))))
+      ;; erlang:cancel_timer(TimerRef, Opts) — OTP 29 gen_server cancels with [{async,true},{info,false}].
+      ;; Options only govern whether/how the result is reported; the cancel itself is the same. -> :ok.
+      (func $erlang.cancel_timer_2 (param $ref (ref null eq)) (param $opts (ref null eq)) (result (ref null eq))
+        (drop (call $cancel_timer_raw (struct.get $ref 0 (ref.cast (ref $ref) (local.get $ref)))))
+        (global.get $atom_ok))
       ;; send dest may be a $pid, a monitor-alias $ref (gen:reply uses one), or a registered name
       ;; (atom) -> resolve to a raw pid id.
       (func $resolve_dest (param $d (ref null eq)) (result i32)
@@ -1887,7 +1947,7 @@ defmodule Beam2Wasm do
     do: [{m, fun, arity, length(free)}]
 
   defp make_fun_refs(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&make_fun_refs/1)
-  defp make_fun_refs(l) when is_list(l), do: Enum.flat_map(l, &make_fun_refs/1)
+  defp make_fun_refs([h | t]), do: make_fun_refs(h) ++ make_fun_refs(t)
   defp make_fun_refs(_), do: []
 
   defp collect_literal_funs(user) do
@@ -1916,7 +1976,9 @@ defmodule Beam2Wasm do
   end
 
   defp literal_funs_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&literal_funs_in/1)
-  defp literal_funs_in(l) when is_list(l), do: Enum.flat_map(l, &literal_funs_in/1)
+  # cons-cell recursion (not Enum.flat_map) so IMPROPER lists — e.g. an iodata/charlist constant with a
+  # binary tail, common in Erlang stdlib beams the auto-feed closure pulls in — don't crash flat_map.
+  defp literal_funs_in([h | t]), do: literal_funs_in(h) ++ literal_funs_in(t)
   # a fun can be nested inside a constant MAP value (e.g. Logger metadata `%{report_cb: &format_report/1}`);
   # recurse so its name atom is interned (materialize references $atom_<name>) and it's a DCE root.
   defp literal_funs_in(m) when is_map(m),
@@ -2178,7 +2240,7 @@ defmodule Beam2Wasm do
   defp atoms_in({:literal, term}), do: term_atoms(term)
   defp atoms_in({:atom, a}), do: [a]
   defp atoms_in(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&atoms_in/1)
-  defp atoms_in(l) when is_list(l), do: Enum.flat_map(l, &atoms_in/1)
+  defp atoms_in([h | t]), do: atoms_in(h) ++ atoms_in(t)
   defp atoms_in(_), do: []
 
   defp term_atoms(a) when is_atom(a), do: [a]
@@ -2188,7 +2250,7 @@ defmodule Beam2Wasm do
     do: Map.to_list(m) |> Enum.flat_map(fn {k, v} -> term_atoms(k) ++ term_atoms(v) end)
 
   defp term_atoms(t) when is_tuple(t), do: t |> Tuple.to_list() |> Enum.flat_map(&term_atoms/1)
-  defp term_atoms(l) when is_list(l), do: Enum.flat_map(l, &term_atoms/1)
+  defp term_atoms([h | t]), do: term_atoms(h) ++ term_atoms(t)
   defp term_atoms(_), do: []
 
   defp const_globals do

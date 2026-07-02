@@ -55,16 +55,44 @@ defmodule Mix.Tasks.Wasm.Build do
     Tuple,
     Range,
     Stream,
+    Stream.Reducers,
+    # date/time (needed once :os.system_time is wired — e.g. VFS mtimes, datetime, time.time())
+    Calendar,
+    Calendar.ISO,
+    Date,
+    Time,
+    DateTime,
+    NaiveDateTime,
     Enumerable,
     Collectable,
     Inspect,
     Inspect.Algebra,
+    Inspect.Opts,
+    # Inspect protocol impls — pyex builds error messages with Kernel.inspect (e.g. inspect_tokens/1
+    # over atoms/tuples/binaries/integers), so a bad-input error must not trap the whole sandbox.
+    Inspect.Atom,
+    Inspect.Integer,
+    Inspect.Float,
+    Inspect.List,
+    Inspect.Tuple,
+    Inspect.Map,
+    Inspect.BitString,
+    # atom inspection (Inspect.Atom -> Macro.inspect_atom -> Code.Identifier -> Macro.classify_atom ->
+    # :elixir_config.identifier_tokenizer().tokenize) — so inspecting an atom (e.g. pyex formatting a
+    # parse/lex error via inspect_tokens) returns a clean traceback instead of trapping the sandbox.
+    Macro,
+    Code.Identifier,
+    String.Tokenizer,
+    # Elixir Path — pyex's pathlib (Pyex.Path.join/basename/dirname/…) delegates to it.
+    Path,
     Access,
     ArgumentError,
     RuntimeError,
     KeyError,
     :lists,
     :maps,
+    # Elixir Path delegates path manipulation to Erlang :filename (basename/dirname/join/…).
+    :filename,
     :sets,
     :ordsets,
     :gb_sets,
@@ -104,28 +132,53 @@ defmodule Mix.Tasks.Wasm.Build do
         strict: [
           module: :string,
           export: :keep,
+          dep: :keep,
           out: :string,
           worker: :boolean,
           strict: :boolean,
-          stdlib: :boolean
+          stdlib: :boolean,
+          # auto-feed: also feed the transitive closure of statically-referenced modules (via BEAM
+          # import tables), so a module the code CALLS is never silently a missing-external trap. dce:
+          # keep function-level dead-code elimination (default true). For an interpreter like pyex,
+          # `--auto-feed --no-dce` compiles the whole referenced closure and leans on the differential
+          # harness (CPython oracle) instead of DCE's static-reachability proxy.
+          auto_feed: :boolean,
+          dce: :boolean
         ]
       )
 
-    exports = Keyword.get_values(opts, :export)
-    if exports == [], do: Mix.raise("at least one --export \"name:args->ret\" is required")
+    # Declarative defaults from the project: `wasm: [module: ..., exports: [...], deps: [...]]` in
+    # mix.exs. CLI flags override. This is what lets a project keep its whole wasm build config
+    # versioned and reviewable instead of memorized in a shell command.
+    cfg = Mix.Project.config()[:wasm] || []
+
+    exports = Keyword.get_values(opts, :export) ++ (cfg[:exports] || [])
+    if exports == [], do: Mix.raise("at least one --export \"name:args->ret\" is required (or :exports in the mix.exs :wasm config)")
+
+    # dep allowlist: which dependency apps to feed. Empty = feed every dep (DCE prunes). An explicit
+    # list keeps effectful/irrelevant deps (req, bandit, …) OUT as honest host-boundary externals —
+    # the intentional "what's in the sandbox" boundary, declared rather than hand-curated in bash.
+    dep_allow =
+      case Keyword.get_values(opts, :dep) do
+        [] -> cfg[:deps]
+        list -> Enum.map(list, &String.to_atom/1)
+      end
 
     Mix.Task.run("compile")
     app = Mix.Project.config()[:app]
-    module = Module.concat([Keyword.get(opts, :module, Macro.camelize(to_string(app)))])
+    module = Module.concat([Keyword.get(opts, :module) || cfg[:module] || Macro.camelize(to_string(app))])
     out = Path.expand(Keyword.get(opts, :out, "wasm"), File.cwd!())
     File.mkdir_p!(out)
 
-    beams = collect_beams(module, Keyword.get(opts, :stdlib, true))
-    Mix.shell().info("collected #{length(beams)} beams (#{inspect(module)} first)")
+    auto_feed = Keyword.get(opts, :auto_feed, Keyword.get(cfg, :auto_feed, false))
+    dce = Keyword.get(opts, :dce, Keyword.get(cfg, :dce, true))
+
+    beams = collect_beams(module, Keyword.get(opts, :stdlib, true), dep_allow, auto_feed)
+    Mix.shell().info("collected #{length(beams)} beams (#{inspect(module)} first)#{if auto_feed, do: " [auto-feed]"}#{unless dce, do: " [no-dce]"}")
 
     watf = Path.join(out, "#{app}.wat")
     wasmf = Path.join(out, "#{app}.wasm")
-    {wat, compile_stubs} = compile(beams, Enum.join(exports, ";"))
+    {wat, compile_stubs} = compile(beams, Enum.join(exports, ";"), dce)
     File.write!(watf, wat)
 
     externals = external_stubs(wat)
@@ -170,13 +223,44 @@ defmodule Mix.Tasks.Wasm.Build do
 
   # ---- beam collection ------------------------------------------------------------------
 
-  defp collect_beams(module, stdlib?) do
+  # Modules the compiler shims natively at the host boundary — feeding their BEAM double-defines the
+  # shimmed functions (wasm-as: duplicate function). Preloaded/NIF modules with no .beam are skipped
+  # automatically (:code.which returns :preloaded). This list is only for shimmed modules that DO ship
+  # a .beam. If auto-feed hits a new duplicate, add the module here.
+  @no_feed MapSet.new([
+             Regex,
+             :re,
+             :binary,
+             :unicode,
+             :math,
+             :crypto,
+             :rand,
+             :os,
+             :file,
+             :persistent_term,
+             :elixir_config,
+             :ets,
+             Code,
+             # String case-mapping (downcase/upcase/3) is shimmed to the host — feeding double-defines
+             String.Unicode
+           ])
+
+  defp collect_beams(module, stdlib?, dep_allow, auto_feed \\ false) do
     build_lib = Path.join(Mix.Project.build_path(), "lib")
+    this_app = to_string(Mix.Project.config()[:app])
+
+    # apps to feed: always the project itself + the compiler-excluded set; when an allowlist is given,
+    # restrict deps to it (+ the primary app). Nil allowlist = feed every dep (DCE prunes).
+    allow = dep_allow && MapSet.new([this_app | Enum.map(dep_allow, &to_string/1)])
 
     app_beams =
       Path.wildcard(Path.join([build_lib, "*", "ebin", "*.beam"]))
       # the compiler itself is a dep of the host project — never feed it to itself
       |> Enum.reject(&String.contains?(&1, "/beam2wasm/"))
+      |> Enum.filter(fn path ->
+        # path is .../build/<env>/lib/<app>/ebin/<mod>.beam — keep if no allowlist, or app ∈ allow
+        allow == nil or MapSet.member?(allow, path |> Path.dirname() |> Path.dirname() |> Path.basename())
+      end)
 
     consolidated = Path.wildcard(Path.join(Mix.Project.consolidation_path(), "*.beam"))
 
@@ -196,8 +280,67 @@ defmodule Mix.Tasks.Wasm.Build do
         []
       end
 
-    ([primary | app_beams -- [primary]] ++ stdlib_beams ++ consolidated)
-    |> dedup_prefer_consolidated(consolidated)
+    base = [primary | app_beams -- [primary]] ++ stdlib_beams ++ consolidated
+
+    beams =
+      if auto_feed do
+        base ++ discover_closure(base)
+      else
+        base
+      end
+
+    dedup_prefer_consolidated(beams, consolidated)
+  end
+
+  # Transitive closure of statically-referenced modules: walk each beam's IMPORT table, resolve every
+  # referenced module to its .beam on the code path, and repeat to fixpoint. Retires the "forgot to feed
+  # module X" class for anything the code statically calls. (Dynamic dispatch — protocol/apply/config —
+  # is NOT in the import table; those still need consolidation or a host shim.)
+  defp discover_closure(seed_beams) do
+    seen = MapSet.new(seed_beams, &beam_module/1)
+    do_discover(seed_beams, MapSet.union(seen, @no_feed), [])
+  end
+
+  defp do_discover([], _seen, acc), do: acc
+
+  defp do_discover([beam | rest], seen, acc) do
+    {new_beams, seen} =
+      beam
+      |> beam_imports()
+      |> Enum.reject(&MapSet.member?(seen, &1))
+      |> Enum.reduce({[], seen}, fn mod, {beams, seen} ->
+        seen = MapSet.put(seen, mod)
+
+        case mod_beam(mod) do
+          nil -> {beams, seen}
+          path -> {[path | beams], seen}
+        end
+      end)
+
+    do_discover(rest ++ new_beams, seen, acc ++ new_beams)
+  end
+
+  defp beam_module(path), do: path |> Path.basename(".beam") |> String.to_atom()
+
+  # imported (externally-called) modules of a beam, from its ImpT chunk
+  defp beam_imports(path) do
+    case :beam_lib.chunks(String.to_charlist(path), [:imports]) do
+      {:ok, {_mod, [{:imports, imports}]}} -> imports |> Enum.map(fn {m, _f, _a} -> m end) |> Enum.uniq()
+      _ -> []
+    end
+  end
+
+  # a module's .beam path, or nil for preloaded/NIF/absent modules (nothing to compile) and the
+  # compiler itself (never fed to itself)
+  defp mod_beam(mod) do
+    case :code.which(mod) do
+      path when is_list(path) ->
+        str = to_string(path)
+        if String.contains?(str, "/beam2wasm/"), do: nil, else: str
+
+      _ ->
+        nil
+    end
   end
 
   # drop unconsolidated copies of modules that have a consolidated build; preserve order
@@ -221,10 +364,10 @@ defmodule Mix.Tasks.Wasm.Build do
 
   # ---- compile + assemble ---------------------------------------------------------------
 
-  defp compile(beams, exports_spec) do
+  defp compile(beams, exports_spec, dce \\ true) do
     # :stub so unsupported constructs become COUNTED traps we can report (and fail on
     # under --strict) instead of aborting mid-module.
-    case Beam2Wasm.compile(beams, exports: exports_spec, stub: true) do
+    case Beam2Wasm.compile(beams, exports: exports_spec, stub: true, dce: dce) do
       {:ok, %Beam2Wasm.Result{wat: wat, stubs: stubs}} -> {wat, stubs}
       {:error, e} -> Mix.raise("compile failed: " <> Exception.message(e))
     end

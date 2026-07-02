@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# elw — compile a pure-Elixir file to WasmGC and run one of its functions, end to end.
+#
+#   cli/elw <file.ex> [entry] [int-arg ...]
+#
+# Defaults: entry = "main", no args. Integer args are passed across the boundary as f64
+# (exact to 2^53). The entry's return value is printed as JSON (walked out of the WasmGC
+# heap). Pure programs with no external deps just work; to pull in stdlib/deps modules,
+# set DEPS to a comma/space list of module names, resolved via :code.which:
+#
+#   DEPS="Enum,String" cli/elw myprog.ex main
+#
+# Env: NODE / WASM_AS override the toolchain binaries. KEEP=1 keeps the build artifacts.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+file="${1:?usage: elw <file.ex> [entry] [int-arg ...]}"; shift
+entry="main"; if [[ $# -gt 0 && "$1" != -* && ! "$1" =~ ^-?[0-9]+$ ]]; then entry="$1"; shift; fi
+args=("$@")
+
+# toolchain: prefer $NODE, else the project-pinned 24.x line, else PATH.
+node="${NODE:-}"
+[[ -z "$node" ]] && node="$(ls "$HOME"/.nvm/versions/node/v24.*/bin/node 2>/dev/null | tail -1 || true)"
+[[ -z "$node" ]] && node="$(command -v node)"
+wasmas="${WASM_AS:-$(command -v wasm-as)}"
+
+build="$root/cli/_work"; mkdir -p "$build"
+
+# 1. Elixir source -> BEAM bytecode.
+elixirc -o "$build" "$file"
+primary="$(basename "$(ls -t "$build"/Elixir.*.beam | head -1)")"
+beams=("$build/$primary")
+
+# extra dependency modules, resolved to their .beam on disk via the running VM.
+if [[ -n "${DEPS:-}" ]]; then
+  for m in ${DEPS//,/ }; do
+    p="$(elixir -e "IO.write(:code.which(Elixir.$m))")"
+    beams+=("$p")
+  done
+fi
+
+# 2. build the EXPORTS signature: numeric args are `int`, everything else `bin` (a string).
+#    Return type is `term`, so any value walks back out of the heap.
+sig=""
+for a in ${args[@]+"${args[@]}"}; do
+  if [[ "$a" =~ ^-?[0-9]+$ ]]; then sig+="int,"; else sig+="bin,"; fi
+done
+sig="${sig%,}"
+exports="$entry:$sig->term"
+
+# 3. BEAM -> WAT -> WASM.  STUB=1 lets unlowered paths become traps so the module still builds;
+#    BIGNUM=1 gives exact integers (and the int_val bridge termToJs decodes).
+wat="$build/out.wat"; wasm="$build/out.wasm"
+STUB=1 BIGNUM=1 ATOMNAMES=1 EXPORTS="$exports" elixir "$root/beam2wasm.exs" "${beams[@]}" > "$wat"
+"$wasmas" "$wat" -o "$wasm" -all
+
+# 4. instantiate + call + print.
+"$node" "$root/cli/runcli.mjs" "$wasm" "$wat" "$entry" ${args[@]+"${args[@]}"}
+
+[[ -n "${KEEP:-}" ]] || rm -f "$wat" "$wasm" "$build"/Elixir.*.beam
