@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-command deploy for pyex.ivar.workers.dev — keeps the wasm's TWO homes in sync:
+# One-command deploy for pyex.dev — keeps the wasm's TWO homes in sync:
 #   R2 (browsers fetch /pyex.wasm at runtime)  and  worker/pyex.wasm (bundled module
 #   binding for /api/run — workerd forbids runtime WebAssembly.compile).
 #
@@ -23,7 +23,7 @@ cp "$WASM" "$HERE/worker/pyex.wasm"
 (cd "$HERE/worker" && npx wrangler deploy)
 
 echo "==> validating production"
-curl -sf https://pyex.ivar.workers.dev/api/health | grep -q '"ok":true' && echo "api/health: ok"
-(cd "$HERE/app" && PYEX_URL=https://pyex.ivar.workers.dev/ npm run check:mobile)
-(cd "$HERE/app" && PYEX_URL=https://pyex.ivar.workers.dev/ node scripts/lru-check.mjs)
-echo "==> deployed + validated: https://pyex.ivar.workers.dev"
+curl -sf https://pyex.dev/api/health | grep -q '"ok":true' && echo "api/health: ok"
+(cd "$HERE/app" && PYEX_URL=https://pyex.dev/ npm run check:mobile)
+(cd "$HERE/app" && PYEX_URL=https://pyex.dev/ node scripts/lru-check.mjs)
+echo "==> deployed + validated: https://pyex.dev"

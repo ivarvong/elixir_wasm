@@ -4,6 +4,13 @@
   "main": "worker.mjs",
   "compatibility_date": "2026-06-20",
 
+  // pyex.dev is registered on this Cloudflare account; custom_domain routes make
+  // wrangler own the DNS records + cert. workers.dev keeps serving as an alias.
+  "routes": [
+    { "pattern": "pyex.dev", "custom_domain": true },
+    { "pattern": "www.pyex.dev", "custom_domain": true }
+  ],
+
   // index.html etc. are served as static assets; the Worker runs for everything else:
   // /pyex.wasm streamed from R2 (browser path) and /api/* (server-side Python).
   "assets": { "directory": "../app/dist", "binding": "ASSETS" },

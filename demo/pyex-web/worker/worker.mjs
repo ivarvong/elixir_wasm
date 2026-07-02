@@ -1,4 +1,4 @@
-// pyex.ivar.workers.dev — the Python-on-WasmGC demo, browser AND server.
+// pyex.dev — the Python-on-WasmGC demo, browser AND server.
 //   /                → index.html   (static asset; Python runs in the visitor's browser)
 //   /pyex.wasm       → the interpreter, streamed from R2 for the browser. Served RAW — the edge
 //                      compresses it once over the wire (~1.7 MB brotli). NB: do NOT pre-compress +

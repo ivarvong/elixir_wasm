@@ -9,7 +9,7 @@
 // can be iterated without deploying: edit, re-run, diff the shots.
 //
 // Requires the wasm at app/public/pyex.wasm (grab the production one):
-//   curl --compressed -o public/pyex.wasm https://pyex.ivar.workers.dev/pyex.wasm
+//   curl --compressed -o public/pyex.wasm https://pyex.dev/pyex.wasm
 
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

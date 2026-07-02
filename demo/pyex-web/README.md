@@ -1,6 +1,6 @@
 # pyex-web — the Python-on-WasmGC playground + HTTP API
 
-Live at **https://pyex.ivar.workers.dev**: [pyex](https://github.com/ivarvong/pyex)
+Live at **https://pyex.dev**: [pyex](https://github.com/ivarvong/pyex)
 (a Python 3 interpreter written in Elixir) compiled to WebAssembly GC, running
 two ways from one Cloudflare Worker:
 
@@ -11,7 +11,7 @@ two ways from one Cloudflare Worker:
   precompiled module binding, runs Python server-side in the isolate:
 
   ```bash
-  curl -s https://pyex.ivar.workers.dev/api/run \
+  curl -s https://pyex.dev/api/run \
     -H 'content-type: application/json' \
     -d '{"code": "print(sum(range(10)))", "files": {"/in.json": "[1,2,3]"}, "max_steps": 5000000}'
   # -> {ok, ms, stdout, files, footprint, spans} | {ok: false, ms, error}
@@ -32,7 +32,7 @@ two ways from one Cloudflare Worker:
 
 ```bash
 cd app
-curl --compressed -o public/pyex.wasm https://pyex.ivar.workers.dev/pyex.wasm  # or a fresh build
+curl --compressed -o public/pyex.wasm https://pyex.dev/pyex.wasm  # or a fresh build
 npm run dev -- --port 5199
 npm run check:mobile         # closed-loop mobile-UX check: headless Chrome at iPhone
                              # geometry; boots wasm, runs an example, walks every tab,
