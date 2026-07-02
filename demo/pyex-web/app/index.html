@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%237c74ff'/%3E%3Ctext x='32' y='43' font-family='ui-monospace,monospace' font-size='30' font-weight='bold' fill='white' text-anchor='middle'%3Epy%3C/text%3E%3C/svg%3E" />
-  <title>pyex — a Python interpreter you can trust with untrusted code</title>
-  <meta name="description" content="A Python 3 interpreter written in Elixir, compiled to WebAssembly GC. Sandboxed by construction: capability-based effects, step budgets, OpenTelemetry traces. Run it in Elixir, in the browser, or over HTTP at the edge." />
-  <meta property="og:title" content="pyex — a Python interpreter you can trust with untrusted code" />
-  <meta property="og:description" content="Python 3 in Elixir on WasmGC. Sandboxed by construction. Try it live — in the browser or over HTTP." />
+  <title>pyex — run agent-written Python as a function call</title>
+  <meta name="description" content="The sandbox is a function call. A Python 3 interpreter written in Elixir for code-mode agents: no containers, no cold starts, no RPC between the agent's code and your tools. Capabilities in, verdict + capability trace out." />
+  <meta property="og:title" content="pyex — run agent-written Python as a function call" />
+  <meta property="og:description" content="The sandbox is a function call. No containers, no cold starts, no RPC between agent code and your tools." />
   <meta property="og:url" content="https://pyex.dev" />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://pyex.dev/og.png" />
@@ -20,7 +20,7 @@
     :root {
       --bg: #050507; --surface: rgba(255,255,255,.025); --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.13);
       --fg: #f4f4f6; --body: #9ba0ab; --faint: #5c6068; --accent: #7c74ff; --accent2: #9a8bff;
-      --grn: #5ce08a; --red: #ff6b64;
+      --grn: #5ce08a; --red: #ff6b64; --yel: #e3b341;
       --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
       --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
     }
@@ -33,14 +33,12 @@
     ::selection { background: rgba(124,116,255,.35); }
     a { color: inherit; text-decoration: none; }
     .wrap { max-width: 1024px; margin: 0 auto; padding: 0 24px; }
+    .narrow { max-width: 760px; }
 
-    /* backdrop: fine grid fading from the top + hero glow */
     .backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
     .backdrop .grid {
       position: absolute; inset: 0;
-      background-image:
-        linear-gradient(var(--line) 1px, transparent 1px),
-        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
       background-size: 72px 72px;
       mask-image: radial-gradient(ellipse 90% 55% at 50% -10%, black 35%, transparent 78%);
       -webkit-mask-image: radial-gradient(ellipse 90% 55% at 50% -10%, black 35%, transparent 78%);
@@ -58,17 +56,16 @@
     }
     nav .inner { display: flex; align-items: center; gap: 12px; height: 100%; }
     .logo { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
-      font: 700 12px var(--mono); color: #fff;
-      background: linear-gradient(145deg, #8d84ff, #5a4fd6);
+      font: 700 12px var(--mono); color: #fff; background: linear-gradient(145deg, #8d84ff, #5a4fd6);
       box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 4px 14px -4px rgba(124,116,255,.8); }
-    .brand { font: 600 15px var(--mono); letter-spacing: 0; }
+    .brand { font: 600 15px var(--mono); }
     nav .links { margin-left: auto; display: flex; align-items: center; gap: 2px; }
     nav .links a { font: 500 13.5px var(--sans); color: var(--body); padding: 8px 12px; border-radius: 8px; transition: .15s; }
     nav .links a:hover { color: var(--fg); background: rgba(255,255,255,.05); }
     nav .links a.solid { color: #000; background: #fff; font-weight: 600; margin-left: 8px; padding: 8px 14px; }
     nav .links a.solid:hover { background: #e6e6ea; }
 
-    header { text-align: center; padding: 96px 0 24px; }
+    header { text-align: center; padding: 88px 0 24px; }
     .badge {
       display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 13px 0 9px;
       border: 1px solid var(--line2); border-radius: 999px; background: rgba(255,255,255,.03);
@@ -76,44 +73,47 @@
     }
     .badge .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--grn); box-shadow: 0 0 10px var(--grn); }
     h1 {
-      margin: 26px auto 20px; max-width: 17ch;
-      font-size: clamp(40px, 7vw, 68px); line-height: 1.04; letter-spacing: -.035em; font-weight: 700;
+      margin: 26px auto 14px; max-width: 16ch;
+      font-size: clamp(38px, 6.6vw, 64px); line-height: 1.06; letter-spacing: -.035em; font-weight: 700;
       background: linear-gradient(180deg, #fff 30%, #b6b9c3);
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }
-    h1 em {
-      font-style: normal;
+    h1 em { font-style: normal;
       background: linear-gradient(90deg, #b1a6ff, #7c74ff 55%, #a08bff);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
-    }
-    .sub { font-size: 16.5px; color: var(--body); max-width: 56ch; margin: 0 auto; }
+      -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .position { font: 500 15px var(--mono); color: var(--accent2); margin: 0 0 18px; }
+    .sub { font-size: 16.5px; color: var(--body); max-width: 60ch; margin: 0 auto; }
     .sub b { color: var(--fg); font-weight: 600; }
     .ctas { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin: 30px 0 0; }
-    .btn {
-      display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 22px;
-      border-radius: 10px; font: 600 14px var(--sans); cursor: pointer; transition: .15s; border: 1px solid transparent;
-    }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 22px;
+      border-radius: 10px; font: 600 14px var(--sans); cursor: pointer; transition: .15s; border: 1px solid transparent; }
     .btn.primary { background: #fff; color: #000; box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 8px 30px -12px rgba(255,255,255,.45); }
     .btn.primary:hover { background: #e6e6ea; }
-    .btn.ghost { background: rgba(255,255,255,.02); color: var(--fg); border-color: var(--line2); }
+    .btn.ghost { background: rgba(255,255,255,.02); color: var(--fg); border-color: var(--line2); font-family: var(--mono); font-size: 13px; }
     .btn.ghost:hover { border-color: rgba(124,116,255,.6); background: rgba(124,116,255,.06); }
 
-    /* live demo card */
-    .demo-wrap { position: relative; max-width: 780px; margin: 56px auto 0; }
-    .demo-wrap::before {
-      content: ""; position: absolute; inset: -1px; border-radius: 17px; z-index: -1;
-      background: linear-gradient(140deg, rgba(124,116,255,.5), rgba(124,116,255,.06) 30%, rgba(255,255,255,.06) 60%, rgba(92,224,138,.25));
+    pre.block {
+      background: #0a0a0e; border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
+      font: 400 12.5px/1.7 var(--mono); color: var(--fg); overflow-x: auto; margin: 24px 0 0; text-align: left;
+      box-shadow: 0 30px 70px -40px rgba(0,0,0,.9);
     }
-    .demo {
-      background: #0a0a0e; border-radius: 16px; overflow: hidden; text-align: left;
-      box-shadow: 0 40px 90px -40px rgba(0,0,0,.9), 0 0 80px -30px rgba(124,116,255,.25);
-    }
+    pre.block .c { color: var(--faint); }
+    pre.block .g { color: var(--grn); }
+    pre.block .p { color: var(--accent2); }
+    pre.block .s { color: var(--yel); }
+    pre.block a { color: var(--accent2); text-decoration: underline; text-underline-offset: 3px; }
+
+    .demo-wrap { position: relative; max-width: 780px; margin: 40px auto 0; }
+    .demo-wrap::before { content: ""; position: absolute; inset: -1px; border-radius: 17px; z-index: -1;
+      background: linear-gradient(140deg, rgba(124,116,255,.5), rgba(124,116,255,.06) 30%, rgba(255,255,255,.06) 60%, rgba(92,224,138,.25)); }
+    .demo { background: #0a0a0e; border-radius: 16px; overflow: hidden; text-align: left;
+      box-shadow: 0 40px 90px -40px rgba(0,0,0,.9), 0 0 80px -30px rgba(124,116,255,.25); }
     .demo .bar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 44px;
       border-bottom: 1px solid var(--line); font: 500 12px var(--mono); color: var(--body); }
     .demo .bar .dots { display: flex; gap: 6px; }
     .demo .bar .dots i { width: 10px; height: 10px; border-radius: 999px; background: var(--line2); }
     .demo .bar .hint { margin-left: auto; color: var(--faint); }
-    .demo textarea { display: block; width: 100%; min-height: 148px; padding: 16px 18px; border: 0; resize: vertical;
+    .demo textarea { display: block; width: 100%; min-height: 150px; padding: 16px 18px; border: 0; resize: vertical;
       background: transparent; color: var(--fg); font: 400 13.5px/1.6 var(--mono); outline: none; }
     .demo pre.out { margin: 0; padding: 13px 18px; border-top: 1px solid var(--line); background: rgba(255,255,255,.02);
       font: 400 13px/1.5 var(--mono); color: var(--grn); overflow-x: auto; white-space: pre; }
@@ -127,45 +127,59 @@
     .demo .run:disabled { opacity: .6; }
     .demo .meta { font: 500 12px var(--mono); color: var(--faint); }
 
-    /* proof strip */
-    .proof { display: flex; gap: 10px 28px; justify-content: center; flex-wrap: wrap; margin: 34px 0 0;
-      font: 500 12.5px var(--mono); color: var(--faint); }
-    .proof span::before { content: "◆ "; color: rgba(124,116,255,.55); font-size: 9px; vertical-align: 1px; }
-
-    section { padding: 96px 0 0; }
+    section { padding: 88px 0 0; }
     .kicker { font: 600 12px var(--mono); color: var(--accent2); text-transform: uppercase; letter-spacing: .1em; margin: 0 0 10px; }
-    h2 { font-size: clamp(26px, 3.6vw, 34px); letter-spacing: -.025em; line-height: 1.15; margin: 0 0 12px; font-weight: 700; }
-    .lede { color: var(--body); font-size: 15.5px; max-width: 62ch; margin: 0; }
-    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 30px; }
-    .card {
-      position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px;
-      transition: border-color .2s, background .2s;
-    }
+    h2 { font-size: clamp(25px, 3.4vw, 32px); letter-spacing: -.025em; line-height: 1.18; margin: 0 0 12px; font-weight: 700; }
+    .lede { color: var(--body); font-size: 15.5px; max-width: 66ch; margin: 0; }
+    .lede b, .lede strong { color: var(--fg); }
+    .lede code, td code, .card p code { font: 500 12px var(--mono); color: var(--accent2); }
+
+    table { width: 100%; border-collapse: collapse; margin: 26px 0 0; font-size: 14px; }
+    th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+    th { font: 600 12px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+    td { color: var(--body); }
+    td:first-child { color: var(--fg); font-weight: 500; }
+    td.good { color: var(--grn); font-family: var(--mono); font-size: 13px; }
+    td.num { font-family: var(--mono); font-size: 13px; color: var(--fg); }
+    .table-scroll { overflow-x: auto; }
+
+    blockquote { margin: 26px 0 0; padding: 18px 22px; border-left: 2px solid var(--accent);
+      background: rgba(124,116,255,.05); border-radius: 0 12px 12px 0; color: var(--body); font-size: 15px; }
+    blockquote b { color: var(--fg); }
+    blockquote code { font: 500 12.5px var(--mono); color: var(--accent2); }
+
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 26px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; transition: border-color .2s, background .2s; }
     .card:hover { border-color: rgba(124,116,255,.45); background: rgba(124,116,255,.04); }
-    .card .glyph { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; margin-bottom: 12px;
-      background: rgba(124,116,255,.12); border: 1px solid rgba(124,116,255,.25); color: var(--accent2);
-      font: 600 13px var(--mono); }
     .card h3 { margin: 0 0 6px; font-size: 14.5px; font-weight: 600; }
     .card p { margin: 0; font-size: 13.5px; color: var(--body); line-height: 1.55; }
-    .card code { font: 500 12px var(--mono); color: var(--accent2); }
 
-    pre.block {
-      background: #0a0a0e; border: 1px solid var(--line); border-radius: 14px; padding: 20px;
-      font: 400 12.5px/1.7 var(--mono); color: var(--fg); overflow-x: auto; margin: 28px 0 0;
-      box-shadow: 0 30px 70px -40px rgba(0,0,0,.9);
-    }
-    pre.block .c { color: var(--faint); }
-    pre.block .g { color: var(--grn); }
-    pre.block a { color: var(--accent2); text-decoration: underline; text-underline-offset: 3px; }
+    ul.strip { list-style: none; margin: 26px 0 0; padding: 0; display: grid; gap: 9px; }
+    ul.strip li { font-size: 14px; color: var(--body); padding-left: 24px; position: relative; }
+    ul.strip li::before { content: "✓"; position: absolute; left: 0; color: var(--grn); font: 600 13px var(--mono); }
+    ul.strip b { color: var(--fg); }
 
-    footer { margin-top: 110px; padding: 30px 0 48px; border-top: 1px solid var(--line);
+    .honest { border: 1px solid var(--line2); border-radius: 14px; padding: 22px 24px; margin-top: 26px; background: rgba(255,255,255,.015); }
+    .honest h3 { margin: 0 0 8px; font: 600 13px var(--mono); color: var(--yel); text-transform: uppercase; letter-spacing: .08em; }
+    .honest p { margin: 0; color: var(--body); font-size: 14.5px; }
+    .honest b { color: var(--fg); }
+
+    .install { text-align: center; margin-top: 96px; padding: 44px 24px; border: 1px solid var(--line); border-radius: 16px;
+      background: radial-gradient(ellipse 70% 120% at 50% 0%, rgba(124,116,255,.09), transparent 65%); }
+    .install h2 { margin-bottom: 6px; }
+    .install .dep { display: inline-block; margin: 16px 0 0; padding: 12px 22px; border: 1px solid var(--line2); border-radius: 10px;
+      background: #0a0a0e; font: 500 14px var(--mono); color: var(--fg); }
+    .install .dep .p { color: var(--accent2); }
+
+    footer { margin-top: 90px; padding: 30px 0 48px; border-top: 1px solid var(--line);
       display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; font: 500 13px var(--mono); color: var(--faint); }
     footer a { color: var(--body); transition: .15s; }
     footer a:hover { color: var(--fg); }
     @media (max-width: 640px) {
-      header { padding-top: 60px; }
+      header { padding-top: 56px; }
       .ctas .btn { flex: 1 1 100%; }
       nav .links a:not(.solid) { padding: 8px 8px; }
+      section { padding-top: 64px; }
     }
     @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   </style>
@@ -176,7 +190,8 @@
   <nav><div class="wrap inner">
     <div class="logo">py</div><span class="brand">pyex</span>
     <div class="links">
-      <a href="#api">API</a>
+      <a href="#sandbox">Sandbox</a>
+      <a href="#numbers">Numbers</a>
       <a href="https://github.com/ivarvong/pyex">GitHub</a>
       <a class="solid" href="/play/">Playground</a>
     </div>
@@ -184,24 +199,36 @@
 
   <div class="wrap">
     <header>
-      <span class="badge"><span class="dot"></span>live on the edge — Python 3 · Elixir · WasmGC</span>
-      <h1>A Python interpreter you can <em>trust with untrusted code</em></h1>
+      <span class="badge"><span class="dot"></span>this page runs it live — Python 3 · Elixir · WasmGC</span>
+      <h1>Run agent-written Python as a <em>function call</em></h1>
+      <p class="position">The sandbox is a function call.</p>
       <p class="sub">
-        pyex is a Python&nbsp;3 interpreter written in <b>Elixir</b>, compiled to <b>WebAssembly&nbsp;GC</b> —
-        built for running LLM-generated code. No processes, no ambient authority: effects are
-        <b>capabilities you hand in</b>, execution is <b>step-budgeted and deterministic</b>, and every
-        run returns an <b>OpenTelemetry trace</b> of what it did.
+        pyex is a Python&nbsp;3 interpreter written in <b>Elixir</b>, built as an execution substrate for
+        agent loops. Sandboxed code never touches a Python runtime, a process, or your filesystem —
+        it reaches an interpreter that sees only the <b>capabilities you pass in</b>.
+        Tenant boot: <b>microseconds</b>. Container cold start: seconds.
       </p>
       <div class="ctas">
         <a class="btn primary" href="/play/">Open the playground</a>
-        <a class="btn ghost" href="#api">curl the API</a>
+        <a class="btn ghost" href="https://hex.pm/packages/pyex">{:pyex, "~> 0.1"}</a>
       </div>
 
-      <!-- runs via POST /api/run — server-side Python, no 12 MB download needed -->
+      <pre class="block" style="max-width: 780px; margin-left: auto; margin-right: auto;"><span class="c"># the whole pitch: the model emits Python, your tools are host functions,</span>
+<span class="c"># isolation is deny-by-default — and it's all one function call.</span>
+tools = %{
+  <span class="s">"search"</span> => {:builtin, fn [q] -> MyApp.Search.run(q) end},
+  <span class="s">"fetch"</span>  => {:builtin, fn [url] -> MyApp.HTTP.get(url) end}
+}
+
+{:ok, result, ctx} = <span class="p">Pyex.run</span>(code_the_model_wrote,
+  modules: %{<span class="s">"agent"</span> => %{<span class="s">"tools"</span> => tools}},
+  filesystem: %{<span class="s">"notes.md"</span> => scratchpad},
+  limits: [timeout: 5_000, max_memory_bytes: 50_000_000])</pre>
+
       <div class="demo-wrap"><div class="demo">
         <div class="bar">
           <span class="dots"><i></i><i></i><i></i></span>
-          <span>live — runs at the edge via <b style="color:var(--fg)">POST /api/run</b></span>
+          <span>live — this very interpreter, compiled to WasmGC, in this page's Worker</span>
           <span class="hint">⌘↵</span>
         </div>
         <textarea id="code" spellcheck="false" aria-label="Python code">a = b = 1                  # chained assignment, like real Python
@@ -215,43 +242,159 @@ print(f"golden ratio ≈ {b / a:.6f}")</textarea>
         <pre class="out" id="out"></pre>
         <div class="foot">
           <button class="run" id="run">Run</button>
-          <span class="meta" id="meta">a fresh sandbox per request · step-budgeted</span>
+          <span class="meta" id="meta">fresh sandbox per request · deterministic step budget</span>
         </div>
       </div></div>
-
-      <div class="proof">
-        <span>6,500+ tests</span>
-        <span>differentially fuzzed vs CPython</span>
-        <span>0 processes spawned</span>
-        <span>deterministic under a seed</span>
-      </div>
     </header>
 
     <section>
-      <p class="kicker">sandboxed by construction</p>
-      <h2>Not a jail bolted on.<br />An interpreter that can't reach out.</h2>
-      <p class="lede">Isolation isn't a wrapper around the interpreter — it's the shape of the interpreter. There is no path to the host that you didn't hand in as a value.</p>
-      <div class="grid2">
-        <div class="card"><div class="glyph">⬡</div><h3>Capability effects</h3><p>Files, network, storage, and clocks exist only if the host passes them in — attenuate them, or swap in <code>copy-on-write overlays</code> that stage every effect for review before a commit.</p></div>
-        <div class="card"><div class="glyph">◱</div><h3>Hard budgets</h3><p>Steps, memory, and output are metered. A runaway <code>while True</code> dies with a clean Python error — never a hung host, never an OOM.</p></div>
-        <div class="card"><div class="glyph">≡</div><h3>Deterministic</h3><p>Seeded runs are byte-for-byte reproducible. The run you previewed is the run that commits — no time-of-check/time-of-use gap.</p></div>
-        <div class="card"><div class="glyph">⟁</div><h3>Observable</h3><p>Every run returns a resource footprint and OpenTelemetry spans — including spans your Python emits itself with <code>tracer.start_as_current_span</code>.</p></div>
+      <p class="kicker">why code mode needs a different shape</p>
+      <h2>Ten tool calls become one program.<br />Now who runs the program?</h2>
+      <p class="lede">
+        Tool-calling agents pay one model round-trip per action. Code mode collapses ten tool calls into
+        one program — but now you're executing untrusted, model-written code on every step. The industry
+        answer is a VM per step, which reintroduces the latency you were removing and puts an RPC boundary
+        between the agent's code and every tool it calls. pyex's answer: <b>interpret the Python yourself,
+        in-process</b> — a step costs microseconds, and a tool call is a host function dispatch. No IPC, no
+        marshalling, no path from Python source to an OS process.
+      </p>
+      <div class="table-scroll"><table>
+        <tr><th></th><th>Sandbox service / microVM</th><th>pyex</th></tr>
+        <tr><td>Start a run</td><td>seconds cold, or a warm pool to manage</td><td class="good">~200 µs, no pool</td></tr>
+        <tr><td>Call a tool</td><td>HTTP/RPC round-trip</td><td class="good">Elixir function dispatch</td></tr>
+        <tr><td>Keep agent state</td><td>serialize + ship</td><td class="good">a value on your heap</td></tr>
+        <tr><td>Per-tenant cost</td><td>a VM</td><td class="good">a struct</td></tr>
+      </table></div>
+    </section>
+
+    <section id="sandbox">
+      <p class="kicker">the trust boundary is a diff you can read</p>
+      <h2>Everything the program can see<br />is an argument.</h2>
+      <blockquote>
+        <code>open()</code> writes to the map you passed in. <code>requests.get</code> hits your allowlist.
+        There is no <code>os.exec</code> because it doesn't exist. And a static analyzer walks the compiled
+        BEAM code on every CI run and <b>fails the build</b> if anything under <code>lib/pyex</code>
+        references <code>File</code>, <code>Port</code>, <code>System.cmd</code>, <code>spawn</code>, or the
+        host environment. The sandbox guarantee is a CI gate, not a code-review promise.
+      </blockquote>
+      <pre class="block"><span class="c"># Deny by default. Every effect is a capability you chose to hand in.</span>
+<span class="p">Pyex.run</span>(source,
+  filesystem: %{<span class="s">"data.json"</span> => json},           <span class="c"># open() sees only this</span>
+  network: [%{allowed_url_prefix: <span class="s">"https://api.example.com/"</span>}],
+  env: %{<span class="s">"API_KEY"</span> => key},                     <span class="c"># injected, never in source</span>
+  limits: [timeout: 5_000, max_memory_bytes: 50_000_000])</pre>
+      <p class="lede" style="margin-top: 22px">
+        And every run returns an unforgeable <b>capability ledger</b> — an OpenTelemetry span tree of every
+        file, URL, and store the program touched, <b>even when it crashed</b>. Preview effects before they
+        happen: copy-on-write overlays stage <code>open(...).write</code> and <code>store.put</code> for
+        review, then <code>commit/1</code> applies exactly the run you approved — deterministic under a
+        seed, so there is no time-of-check/time-of-use gap.
+      </p>
+    </section>
+
+    <section>
+      <p class="kicker">the loop itself is sandboxed</p>
+      <h2>Most sandboxes run the tool code.<br />pyex runs the controller.</h2>
+      <pre class="block"><span class="c"># The model wrote this. It runs 10 steps without a single</span>
+<span class="c"># network hop between the code and the tools.</span>
+<span class="p">import</span> json
+<span class="p">from</span> agent <span class="p">import</span> call_model, tools
+
+state = {<span class="s">"steps"</span>: []}
+<span class="p">for</span> _ <span class="p">in</span> range(10):
+    decision = call_model(state)
+    <span class="p">if</span> decision[<span class="s">"action"</span>] == <span class="s">"stop"</span>:
+        <span class="p">break</span>
+    result = tools[decision[<span class="s">"tool"</span>]](*decision[<span class="s">"args"</span>])
+    state[<span class="s">"steps"</span>].append({<span class="s">"tool"</span>: decision[<span class="s">"tool"</span>], <span class="s">"result"</span>: result})
+<span class="p">print</span>(json.dumps(state))</pre>
+      <p class="lede" style="margin-top: 22px">
+        Generators are continuations, so a step can pause and resume without owning a process.
+        <code>asyncio.gather</code> interleaves like CPython. Retries, planners, eval harnesses — the loop
+        logic the model emits just runs.
+        See <a href="https://github.com/ivarvong/pyex/blob/main/examples/research_agent.py" style="color:var(--accent2)">examples/research_agent.py</a>
+        for the runnable proof.
+      </p>
+    </section>
+
+    <section id="numbers">
+      <p class="kicker">numbers, reproducibly</p>
+      <h2>The command is the marketing.</h2>
+      <div class="table-scroll"><table>
+        <tr><th>Workload</th><th>p50</th><th>p99</th></tr>
+        <tr><td>FizzBuzz (100 iterations)</td><td class="num">182 µs</td><td class="num">238 µs</td></tr>
+        <tr><td>Algorithms suite (~150 LOC: sieve + sort + fib + stats)</td><td class="num">1.67 ms</td><td class="num">2.04 ms</td></tr>
+        <tr><td>FastAPI cold boot</td><td class="num">221 µs</td><td class="num">302 µs</td></tr>
+        <tr><td>FastAPI route — list + Jinja2 render</td><td class="num">108 µs</td><td class="num">166 µs</td></tr>
+        <tr><td>FastAPI route — 404</td><td class="num">9 µs</td><td class="num">19 µs</td></tr>
+      </table></div>
+      <pre class="block">mix run bench/readme_bench.exs</pre>
+      <p class="lede" style="margin-top: 22px">
+        The honest tradeoff: <b>10–100× slower than CPython for pure CPU work — and it doesn't matter</b>,
+        because agent steps are dominated by tool I/O, JSON shaping, and routing. Compute budgets exclude
+        I/O time: an agent waiting on a slow tool isn't killed for it; an infinite loop is.
+      </p>
+    </section>
+
+    <section>
+      <p class="kicker">multi-tenancy</p>
+      <h2>A tenant is a value.</h2>
+      <p class="lede">
+        A booted app is a struct on your heap. 100,000 tenants is a benchmark file
+        (<code>bench/multitenant_scaling_bench.exs</code>), not a capacity-planning meeting. Storage
+        multitenancy is an object boundary, not a <code>tenant_id</code> filter someone forgets.
+      </p>
+      <pre class="block">{:ok, app}       = <span class="p">Pyex.Lambda.boot</span>(model_generated_fastapi_source)
+{:ok, resp, app} = <span class="p">Pyex.Lambda.handle</span>(app, %{method: <span class="s">"GET"</span>, path: <span class="s">"/hello/world"</span>})
+<span class="c"># boot once, handle many; state threads through; tenants serialize like any value</span></pre>
+    </section>
+
+    <section>
+      <p class="kicker">trust, itemized</p>
+      <h2>How we know it works.</h2>
+      <ul class="strip">
+        <li><b>Differentially fuzzed against CPython</b> — outputs <i>and</i> exception types must match.</li>
+        <li><b>Byte-for-byte repr conformance</b> suite, plus fixture programs checked against CPython ground truth.</li>
+        <li><b>5,073 IBM dectest vectors</b> pass for <code>decimal</code>.</li>
+        <li><b>Property tests</b> assert malformed input never crashes the host — it returns a Python error.</li>
+        <li><b>Dialyzer-clean</b>, with <code>@spec</code> on the public surface; the banned-call tracer fails CI if the sandbox boundary regresses.</li>
+        <li><b>Real workloads as end-to-end tests</b>: a webhook handler, a DCF model, an SSR blog, a research agent.</li>
+      </ul>
+    </section>
+
+    <section>
+      <p class="kicker">defense in depth</p>
+      <h2>Three layers, each named.</h2>
+      <p class="lede">
+        <b>pyex stops the 99% cooperatively</b> — step, memory, and output budgets with clean Python errors.
+        <b>The BEAM stops the rest unconditionally</b> — run each guest in a monitored process with a
+        GC-enforced <code>max_heap_size</code> and a wall-clock kill
+        (<a href="https://github.com/ivarvong/pyex/blob/main/examples/sandbox_server.exs" style="color:var(--accent2)">examples/sandbox_server.exs</a>
+        is the copy-paste). <b>A microVM around the whole node stops the adversary.</b>
+        One ops property worth quoting: <b>the guest can't move your 5xx rate</b> — verdicts
+        (ok / error / timeout / OOM) are body fields; HTTP status describes only your service.
+      </p>
+      <div class="honest">
+        <h3>What it isn't</h3>
+        <p>
+          pyex is a <b>hardened library, not a microVM</b>. Against a sophisticated adversary it composes
+          with stronger isolation rather than replacing it. It runs <b>the Python agents actually write</b> —
+          <code>json</code>, <code>re</code>, <code>asyncio</code>, <code>pydantic</code>, <code>requests</code>,
+          <code>fastapi</code>, partial <code>pandas</code> — not all of CPython. And it's an interpreter:
+          pure CPU work runs 10–100× slower than CPython, which agent workloads don't notice. Naming our own
+          boundary is the point.
+        </p>
       </div>
     </section>
 
-    <section id="api">
-      <p class="kicker">one interpreter, three homes</p>
-      <h2>Embed it in Elixir. Ship it to a browser.<br />Call it over HTTP.</h2>
-      <p class="lede">One codebase, compiled two ways. The wasm running in this page's Cloudflare Worker is the same artifact the <a href="/play/" style="color:var(--accent2)">playground</a> runs in your browser.</p>
-      <pre class="block"><span class="c"># Elixir — the source of truth (hex.pm/packages/pyex)</span>
-{:ok, result, ctx} = Pyex.run(code, filesystem: fs, limits: [max_steps: 5_000_000])
-
-<span class="c"># HTTP — Python at the edge, JSON out; spans + footprint ride along</span>
-curl -s https://pyex.dev/api/run \
-  -H 'content-type: application/json' \
-  -d '{"code": "print(sum(range(101)))", "files": {"/data.json": "[1,2,3]"}}'
-<span class="g">{"ok":true,"ms":0,"stdout":"5050\n","footprint":{":steps":1,…},"files":{…},"spans":[…]}</span></pre>
-    </section>
+    <div class="install">
+      <h2>Your agent writes Python.<br />Run it on your heap.</h2>
+      <span class="dep">{<span class="p">:pyex</span>, "~> 0.1"}</span>
+      <div class="ctas">
+        <a class="btn primary" href="https://github.com/ivarvong/pyex">Read the source</a>
+        <a class="btn ghost" href="/play/">Try it in your browser</a>
+      </div>
+    </div>
 
     <footer>
       <span>pyex — Python on the BEAM, on WasmGC</span>
@@ -266,8 +409,6 @@ curl -s https://pyex.dev/api/run \
           meta = document.getElementById("meta"), btn = document.getElementById("run");
     const post = () => fetch("/api/run", { method: "POST", headers: { "content-type": "text/plain" }, body: code.value });
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    // A cold isolate can die booting the interpreter (platform 1102) and take its HTTP
-    // connection down with it — retry with backoff so the platform recycles it first.
     async function postJSON() {
       for (let i = 0; ; i++) {
         try {
@@ -287,7 +428,7 @@ curl -s https://pyex.dev/api/run \
         const j = await postJSON();
         const wall = Math.round(performance.now() - t0);
         out.classList.toggle("err", !j.ok);
-        out.textContent = j.ok ? j.stdout.trimEnd() : j.error;
+        out.textContent = j.ok ? j.stdout.trimEnd() : j.error + (j.hint ? "\n(" + j.hint + ")" : "");
         meta.textContent = j.ok
           ? `sandbox ${j.ms} ms · ${wall} ms round-trip · ${(j.footprint[":steps"] ?? 0).toLocaleString()} steps`
           : `failed clean in ${j.ms} ms — the sandbox holding`;

@@ -26,12 +26,19 @@ const KEY = "pyex.wasm";
 const MAX_CODE = 65_536; // the lexer's per-char recursion depth is the platform stack bound
 const MAX_FILES_JSON = 1_048_576;
 // V8 cannot collect WasmGC garbage while a synchronous wasm call is on the stack, so the
-// interpreter's per-step allocations accumulate for the whole pyrun — past ~400k steps that
-// hits the 128 MB isolate ceiling and the platform kills the isolate (a 1102, not a clean
-// Python error). Keep the cap below the death line so a runaway ALWAYS ends in pyex's own
-// LimitError (~600 ms at 300k): the sandbox refusing, not the platform collapsing.
-const DEFAULT_STEPS = 150_000;
-const MAX_STEPS = 300_000;
+// interpreter's per-step allocations accumulate for the whole pyrun. The death line is
+// SHAPE-dependent (scripts/calibrate.mjs sweeps it): most loops survive 3M+ steps, but a
+// list-append loop kills the 128 MB isolate at ~60k steps (~6 KB of uncollectable garbage
+// per append — a quadratic-copy lowering artifact). The cap sits 2x under the WORST
+// shape's prod line so a runaway ALWAYS ends in pyex's own LimitError (tens of ms): the sandbox
+// refusing, not the platform collapsing. For scale: the heaviest playground example needs
+// 471 steps — 30k is ~60x headroom for demo-sized programs.
+const DEFAULT_STEPS = 8_000;
+const MAX_STEPS = 10_000;
+const LIMIT_HINT =
+  "this public endpoint caps runs at a small deterministic step budget; " +
+  "the playground at pyex.dev/play runs bigger budgets in your browser, and the " +
+  "Elixir library (hex.pm/packages/pyex) takes whatever limits you hand it";
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -99,11 +106,17 @@ function runPython(code, files, maxSteps) {
       spans: safeParse(res[4], []),
     };
   }
-  return { ok: false, ms, error: Array.isArray(res) ? res[1] : String(res) };
+  const error = Array.isArray(res) ? res[1] : String(res);
+  const out = { ok: false, ms, error };
+  if (/LimitError: step limit/.test(error)) out.hint = LIMIT_HINT;
+  return out;
 }
 
-async function handleRun(request) {
-  let code, files = {}, maxSteps = DEFAULT_STEPS;
+async function handleRun(request, env) {
+  // Local calibration only: `wrangler dev --var MAX_STEPS_OVERRIDE:5000000` lifts the
+  // clamp so scripts/calibrate.mjs can probe past it. Never set in production.
+  const stepCap = Number(env?.MAX_STEPS_OVERRIDE) || MAX_STEPS;
+  let code, files = {}, maxSteps = Math.min(DEFAULT_STEPS, stepCap);
   const ctype = request.headers.get("content-type") || "";
   if (ctype.includes("application/json")) {
     let body;
@@ -115,7 +128,7 @@ async function handleRun(request) {
       }
       files = body.files;
     }
-    if (body.max_steps != null) maxSteps = Math.min(Math.max(1, Number(body.max_steps) || DEFAULT_STEPS), MAX_STEPS);
+    if (body.max_steps != null) maxSteps = Math.min(Math.max(1, Number(body.max_steps) || DEFAULT_STEPS), stepCap);
   } else {
     code = await request.text();
   }
@@ -136,7 +149,7 @@ export default {
         const r = runPython("print(1 + 1)", {}, 100_000);
         return json({ ok: r.ok && r.stdout === "2\n", exports: Object.keys(boot()).length });
       }
-      if (url.pathname === "/api/run" && request.method === "POST") return handleRun(request);
+      if (url.pathname === "/api/run" && request.method === "POST") return handleRun(request, env);
       return json({ ok: false, error: "POST /api/run — body {code, files?, max_steps?} or text/plain Python" }, 404);
     }
 
