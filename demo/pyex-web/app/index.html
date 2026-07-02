@@ -1,15 +1,305 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%237c74ff'/%3E%3Ctext x='32' y='43' font-family='ui-monospace,monospace' font-size='30' font-weight='bold' fill='white' text-anchor='middle'%3Epy%3C/text%3E%3C/svg%3E" />
-  <title>pyex — Python on WebAssembly GC</title>
-  <meta name="description" content="Run Python in your browser. A Python 3 interpreter written in Elixir, compiled to WebAssembly GC." />
+  <title>pyex — a Python interpreter you can trust with untrusted code</title>
+  <meta name="description" content="A Python 3 interpreter written in Elixir, compiled to WebAssembly GC. Sandboxed by construction: capability-based effects, step budgets, OpenTelemetry traces. Run it in Elixir, in the browser, or over HTTP at the edge." />
+  <meta property="og:title" content="pyex — a Python interpreter you can trust with untrusted code" />
+  <meta property="og:description" content="Python 3 in Elixir on WasmGC. Sandboxed by construction. Try it live — in the browser or over HTTP." />
+  <meta property="og:url" content="https://pyex.dev" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://pyex.dev/og.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://pyex.dev/og.png" />
+  <style>
+    :root {
+      --bg: #050507; --surface: rgba(255,255,255,.025); --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.13);
+      --fg: #f4f4f6; --body: #9ba0ab; --faint: #5c6068; --accent: #7c74ff; --accent2: #9a8bff;
+      --grn: #5ce08a; --red: #ff6b64;
+      --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+      letter-spacing: -.01em; line-height: 1.6; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+    }
+    ::selection { background: rgba(124,116,255,.35); }
+    a { color: inherit; text-decoration: none; }
+    .wrap { max-width: 1024px; margin: 0 auto; padding: 0 24px; }
+
+    /* backdrop: fine grid fading from the top + hero glow */
+    .backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none; }
+    .backdrop .grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-size: 72px 72px;
+      mask-image: radial-gradient(ellipse 90% 55% at 50% -10%, black 35%, transparent 78%);
+      -webkit-mask-image: radial-gradient(ellipse 90% 55% at 50% -10%, black 35%, transparent 78%);
+    }
+    .backdrop .glow {
+      position: absolute; left: 50%; top: -340px; width: 1100px; height: 720px; transform: translateX(-50%);
+      background: radial-gradient(ellipse at center, rgba(124,116,255,.16), rgba(124,116,255,.05) 45%, transparent 70%);
+      filter: blur(4px);
+    }
+
+    nav {
+      position: sticky; top: 0; z-index: 40; height: 60px;
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      background: rgba(5,5,7,.72); border-bottom: 1px solid var(--line);
+    }
+    nav .inner { display: flex; align-items: center; gap: 12px; height: 100%; }
+    .logo { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+      font: 700 12px var(--mono); color: #fff;
+      background: linear-gradient(145deg, #8d84ff, #5a4fd6);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 4px 14px -4px rgba(124,116,255,.8); }
+    .brand { font: 600 15px var(--mono); letter-spacing: 0; }
+    nav .links { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+    nav .links a { font: 500 13.5px var(--sans); color: var(--body); padding: 8px 12px; border-radius: 8px; transition: .15s; }
+    nav .links a:hover { color: var(--fg); background: rgba(255,255,255,.05); }
+    nav .links a.solid { color: #000; background: #fff; font-weight: 600; margin-left: 8px; padding: 8px 14px; }
+    nav .links a.solid:hover { background: #e6e6ea; }
+
+    header { text-align: center; padding: 96px 0 24px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 13px 0 9px;
+      border: 1px solid var(--line2); border-radius: 999px; background: rgba(255,255,255,.03);
+      font: 500 12.5px var(--mono); color: var(--body);
+    }
+    .badge .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--grn); box-shadow: 0 0 10px var(--grn); }
+    h1 {
+      margin: 26px auto 20px; max-width: 17ch;
+      font-size: clamp(40px, 7vw, 68px); line-height: 1.04; letter-spacing: -.035em; font-weight: 700;
+      background: linear-gradient(180deg, #fff 30%, #b6b9c3);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    h1 em {
+      font-style: normal;
+      background: linear-gradient(90deg, #b1a6ff, #7c74ff 55%, #a08bff);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .sub { font-size: 16.5px; color: var(--body); max-width: 56ch; margin: 0 auto; }
+    .sub b { color: var(--fg); font-weight: 600; }
+    .ctas { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin: 30px 0 0; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 22px;
+      border-radius: 10px; font: 600 14px var(--sans); cursor: pointer; transition: .15s; border: 1px solid transparent;
+    }
+    .btn.primary { background: #fff; color: #000; box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 8px 30px -12px rgba(255,255,255,.45); }
+    .btn.primary:hover { background: #e6e6ea; }
+    .btn.ghost { background: rgba(255,255,255,.02); color: var(--fg); border-color: var(--line2); }
+    .btn.ghost:hover { border-color: rgba(124,116,255,.6); background: rgba(124,116,255,.06); }
+
+    /* live demo card */
+    .demo-wrap { position: relative; max-width: 780px; margin: 56px auto 0; }
+    .demo-wrap::before {
+      content: ""; position: absolute; inset: -1px; border-radius: 17px; z-index: -1;
+      background: linear-gradient(140deg, rgba(124,116,255,.5), rgba(124,116,255,.06) 30%, rgba(255,255,255,.06) 60%, rgba(92,224,138,.25));
+    }
+    .demo {
+      background: #0a0a0e; border-radius: 16px; overflow: hidden; text-align: left;
+      box-shadow: 0 40px 90px -40px rgba(0,0,0,.9), 0 0 80px -30px rgba(124,116,255,.25);
+    }
+    .demo .bar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 44px;
+      border-bottom: 1px solid var(--line); font: 500 12px var(--mono); color: var(--body); }
+    .demo .bar .dots { display: flex; gap: 6px; }
+    .demo .bar .dots i { width: 10px; height: 10px; border-radius: 999px; background: var(--line2); }
+    .demo .bar .hint { margin-left: auto; color: var(--faint); }
+    .demo textarea { display: block; width: 100%; min-height: 148px; padding: 16px 18px; border: 0; resize: vertical;
+      background: transparent; color: var(--fg); font: 400 13.5px/1.6 var(--mono); outline: none; }
+    .demo pre.out { margin: 0; padding: 13px 18px; border-top: 1px solid var(--line); background: rgba(255,255,255,.02);
+      font: 400 13px/1.5 var(--mono); color: var(--grn); overflow-x: auto; white-space: pre; }
+    .demo pre.out.err { color: var(--red); }
+    .demo pre.out:empty { display: none; }
+    .demo .foot { display: flex; align-items: center; gap: 14px; padding: 10px 10px 10px 18px; border-top: 1px solid var(--line); }
+    .demo .run { height: 40px; padding: 0 20px; border-radius: 9px; border: 1px solid rgba(255,255,255,.14); cursor: pointer;
+      font: 600 13.5px var(--sans); color: #fff; background: linear-gradient(180deg, #9a8bff, #7266f0);
+      box-shadow: 0 6px 20px -8px rgba(124,116,255,.9); transition: .15s; }
+    .demo .run:hover { filter: brightness(1.12); }
+    .demo .run:disabled { opacity: .6; }
+    .demo .meta { font: 500 12px var(--mono); color: var(--faint); }
+
+    /* proof strip */
+    .proof { display: flex; gap: 10px 28px; justify-content: center; flex-wrap: wrap; margin: 34px 0 0;
+      font: 500 12.5px var(--mono); color: var(--faint); }
+    .proof span::before { content: "◆ "; color: rgba(124,116,255,.55); font-size: 9px; vertical-align: 1px; }
+
+    section { padding: 96px 0 0; }
+    .kicker { font: 600 12px var(--mono); color: var(--accent2); text-transform: uppercase; letter-spacing: .1em; margin: 0 0 10px; }
+    h2 { font-size: clamp(26px, 3.6vw, 34px); letter-spacing: -.025em; line-height: 1.15; margin: 0 0 12px; font-weight: 700; }
+    .lede { color: var(--body); font-size: 15.5px; max-width: 62ch; margin: 0; }
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 30px; }
+    .card {
+      position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+      transition: border-color .2s, background .2s;
+    }
+    .card:hover { border-color: rgba(124,116,255,.45); background: rgba(124,116,255,.04); }
+    .card .glyph { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; margin-bottom: 12px;
+      background: rgba(124,116,255,.12); border: 1px solid rgba(124,116,255,.25); color: var(--accent2);
+      font: 600 13px var(--mono); }
+    .card h3 { margin: 0 0 6px; font-size: 14.5px; font-weight: 600; }
+    .card p { margin: 0; font-size: 13.5px; color: var(--body); line-height: 1.55; }
+    .card code { font: 500 12px var(--mono); color: var(--accent2); }
+
+    pre.block {
+      background: #0a0a0e; border: 1px solid var(--line); border-radius: 14px; padding: 20px;
+      font: 400 12.5px/1.7 var(--mono); color: var(--fg); overflow-x: auto; margin: 28px 0 0;
+      box-shadow: 0 30px 70px -40px rgba(0,0,0,.9);
+    }
+    pre.block .c { color: var(--faint); }
+    pre.block .g { color: var(--grn); }
+    pre.block a { color: var(--accent2); text-decoration: underline; text-underline-offset: 3px; }
+
+    footer { margin-top: 110px; padding: 30px 0 48px; border-top: 1px solid var(--line);
+      display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; font: 500 13px var(--mono); color: var(--faint); }
+    footer a { color: var(--body); transition: .15s; }
+    footer a:hover { color: var(--fg); }
+    @media (max-width: 640px) {
+      header { padding-top: 60px; }
+      .ctas .btn { flex: 1 1 100%; }
+      nav .links a:not(.solid) { padding: 8px 8px; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.tsx"></script>
+  <div class="backdrop"><div class="grid"></div><div class="glow"></div></div>
+
+  <nav><div class="wrap inner">
+    <div class="logo">py</div><span class="brand">pyex</span>
+    <div class="links">
+      <a href="#api">API</a>
+      <a href="https://github.com/ivarvong/pyex">GitHub</a>
+      <a class="solid" href="/play/">Playground</a>
+    </div>
+  </div></nav>
+
+  <div class="wrap">
+    <header>
+      <span class="badge"><span class="dot"></span>live on the edge — Python 3 · Elixir · WasmGC</span>
+      <h1>A Python interpreter you can <em>trust with untrusted code</em></h1>
+      <p class="sub">
+        pyex is a Python&nbsp;3 interpreter written in <b>Elixir</b>, compiled to <b>WebAssembly&nbsp;GC</b> —
+        built for running LLM-generated code. No processes, no ambient authority: effects are
+        <b>capabilities you hand in</b>, execution is <b>step-budgeted and deterministic</b>, and every
+        run returns an <b>OpenTelemetry trace</b> of what it did.
+      </p>
+      <div class="ctas">
+        <a class="btn primary" href="/play/">Open the playground</a>
+        <a class="btn ghost" href="#api">curl the API</a>
+      </div>
+
+      <!-- runs via POST /api/run — server-side Python, no 12 MB download needed -->
+      <div class="demo-wrap"><div class="demo">
+        <div class="bar">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span>live — runs at the edge via <b style="color:var(--fg)">POST /api/run</b></span>
+          <span class="hint">⌘↵</span>
+        </div>
+        <textarea id="code" spellcheck="false" aria-label="Python code">a = b = 1                  # chained assignment, like real Python
+fibs = []
+while len(fibs) < 10:
+    fibs.append(a)
+    a, b = b, a + b        # tuple swap
+
+print(f"fib: {fibs}")
+print(f"golden ratio ≈ {b / a:.6f}")</textarea>
+        <pre class="out" id="out"></pre>
+        <div class="foot">
+          <button class="run" id="run">Run</button>
+          <span class="meta" id="meta">a fresh sandbox per request · step-budgeted</span>
+        </div>
+      </div></div>
+
+      <div class="proof">
+        <span>6,500+ tests</span>
+        <span>differentially fuzzed vs CPython</span>
+        <span>0 processes spawned</span>
+        <span>deterministic under a seed</span>
+      </div>
+    </header>
+
+    <section>
+      <p class="kicker">sandboxed by construction</p>
+      <h2>Not a jail bolted on.<br />An interpreter that can't reach out.</h2>
+      <p class="lede">Isolation isn't a wrapper around the interpreter — it's the shape of the interpreter. There is no path to the host that you didn't hand in as a value.</p>
+      <div class="grid2">
+        <div class="card"><div class="glyph">⬡</div><h3>Capability effects</h3><p>Files, network, storage, and clocks exist only if the host passes them in — attenuate them, or swap in <code>copy-on-write overlays</code> that stage every effect for review before a commit.</p></div>
+        <div class="card"><div class="glyph">◱</div><h3>Hard budgets</h3><p>Steps, memory, and output are metered. A runaway <code>while True</code> dies with a clean Python error — never a hung host, never an OOM.</p></div>
+        <div class="card"><div class="glyph">≡</div><h3>Deterministic</h3><p>Seeded runs are byte-for-byte reproducible. The run you previewed is the run that commits — no time-of-check/time-of-use gap.</p></div>
+        <div class="card"><div class="glyph">⟁</div><h3>Observable</h3><p>Every run returns a resource footprint and OpenTelemetry spans — including spans your Python emits itself with <code>tracer.start_as_current_span</code>.</p></div>
+      </div>
+    </section>
+
+    <section id="api">
+      <p class="kicker">one interpreter, three homes</p>
+      <h2>Embed it in Elixir. Ship it to a browser.<br />Call it over HTTP.</h2>
+      <p class="lede">One codebase, compiled two ways. The wasm running in this page's Cloudflare Worker is the same artifact the <a href="/play/" style="color:var(--accent2)">playground</a> runs in your browser.</p>
+      <pre class="block"><span class="c"># Elixir — the source of truth (hex.pm/packages/pyex)</span>
+{:ok, result, ctx} = Pyex.run(code, filesystem: fs, limits: [max_steps: 5_000_000])
+
+<span class="c"># HTTP — Python at the edge, JSON out; spans + footprint ride along</span>
+curl -s https://pyex.dev/api/run \
+  -H 'content-type: application/json' \
+  -d '{"code": "print(sum(range(101)))", "files": {"/data.json": "[1,2,3]"}}'
+<span class="g">{"ok":true,"ms":0,"stdout":"5050\n","footprint":{":steps":1,…},"files":{…},"spans":[…]}</span></pre>
+    </section>
+
+    <footer>
+      <span>pyex — Python on the BEAM, on WasmGC</span>
+      <a href="/play/">playground</a>
+      <a href="https://github.com/ivarvong/pyex">ivarvong/pyex</a>
+      <a href="https://github.com/ivarvong/elixir_wasm">ivarvong/elixir_wasm</a>
+    </footer>
+  </div>
+
+  <script>
+    const code = document.getElementById("code"), out = document.getElementById("out"),
+          meta = document.getElementById("meta"), btn = document.getElementById("run");
+    const post = () => fetch("/api/run", { method: "POST", headers: { "content-type": "text/plain" }, body: code.value });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // A cold isolate can die booting the interpreter (platform 1102) and take its HTTP
+    // connection down with it — retry with backoff so the platform recycles it first.
+    async function postJSON() {
+      for (let i = 0; ; i++) {
+        try {
+          const res = await post();
+          if (res.status >= 500) throw new Error("edge " + res.status);
+          return await res.json();
+        } catch (err) {
+          if (i >= 2) throw err;
+          await sleep(350 * (i + 1));
+        }
+      }
+    }
+    async function run() {
+      btn.disabled = true; meta.textContent = "running…";
+      const t0 = performance.now();
+      try {
+        const j = await postJSON();
+        const wall = Math.round(performance.now() - t0);
+        out.classList.toggle("err", !j.ok);
+        out.textContent = j.ok ? j.stdout.trimEnd() : j.error;
+        meta.textContent = j.ok
+          ? `sandbox ${j.ms} ms · ${wall} ms round-trip · ${(j.footprint[":steps"] ?? 0).toLocaleString()} steps`
+          : `failed clean in ${j.ms} ms — the sandbox holding`;
+      } catch {
+        out.classList.add("err");
+        out.textContent = "the edge hiccuped — press Run again";
+        meta.textContent = "";
+      }
+      btn.disabled = false;
+    }
+    btn.addEventListener("click", run);
+    code.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); } });
+  </script>
 </body>
 </html>

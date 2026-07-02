@@ -24,6 +24,9 @@ cp "$WASM" "$HERE/worker/pyex.wasm"
 
 echo "==> validating production"
 curl -sf https://pyex.dev/api/health | grep -q '"ok":true' && echo "api/health: ok"
+curl -sf https://pyex.dev/ | grep -q "trust with untrusted code" && echo "landing: ok"
+curl -sfI https://pyex.dev/og.png | grep -qi "image/png" && echo "og.png: ok"
+curl -sf -X POST https://pyex.dev/api/run -H 'content-type: text/plain' -d 'print(1+1)' | grep -q '"stdout":"2' && echo "api/run: ok"
 (cd "$HERE/app" && PYEX_URL=https://pyex.dev/ npm run check:mobile)
 (cd "$HERE/app" && PYEX_URL=https://pyex.dev/ node scripts/lru-check.mjs)
 echo "==> deployed + validated: https://pyex.dev"

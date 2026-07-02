@@ -16,7 +16,9 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BASE = process.env.PYEX_URL || "http://localhost:5199/";
+// The playground lives at /play/ (the root is the marketing landing page).
+const ORIGIN = (process.env.PYEX_URL || "http://localhost:5199/").replace(/\/$/, "");
+const BASE = `${ORIGIN}/play/`;
 const SHOTS = join(dirname(fileURLToPath(import.meta.url)), "shots");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 

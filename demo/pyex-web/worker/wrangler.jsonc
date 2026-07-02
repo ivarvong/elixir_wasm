@@ -22,5 +22,7 @@
   // (workerd forbids runtime WebAssembly.compile). Keep it in sync with the R2 object.
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
 
+  "limits": { "cpu_ms": 5000 },
+
   "observability": { "enabled": true }
 }

@@ -16,6 +16,47 @@ const GH = ({ repo }: { repo: string }) => (
 
 type Tab = "files" | "code" | "output" | "trace";
 
+// The same interpreter runs server-side on this Worker: POST /api/run. The panel
+// renders a curl for WHATEVER is in the editor, so the two paths stay one story.
+function APIPanel({ code, files, onClose }: { code: string; files: Files; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const body = JSON.stringify(Object.keys(files).length ? { code, files } : { code });
+  const curl = `curl -s https://pyex.dev/api/run \\\n  -H 'content-type: application/json' \\\n  -d '${body.replace(/'/g, `'\\''`)}'`;
+  const copy = () => {
+    navigator.clipboard.writeText(curl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1600); });
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-line rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl"
+           onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between pl-4 pr-2 h-12 border-b border-line">
+          <span className="font-mono text-[13px] text-fg">HTTP API — the same interpreter, server-side</span>
+          <button onClick={onClose} className="grid place-items-center w-10 h-10 text-faint hover:text-fg text-lg leading-none">×</button>
+        </div>
+        <div className="p-4 flex flex-col gap-3 text-[12.5px] leading-relaxed">
+          <p className="text-muted">
+            <b className="text-fg">POST /api/run</b> executes Python in this Worker's isolate at the edge —
+            the exact wasm your browser is running now. Fresh sandbox per request, step-budget bounded,
+            no host filesystem or network. The reply carries <span className="text-fg">stdout</span>,
+            the mutated <span className="text-fg">files</span>, the resource <span className="text-fg">footprint</span>,
+            and the program's own OpenTelemetry <span className="text-fg">spans</span>.
+          </p>
+          <p className="text-muted">This curl runs the code currently in your editor:</p>
+          <pre className="bg-surface2 border border-line rounded-lg p-3 overflow-x-auto font-mono text-[11.5px] text-fg whitespace-pre">{curl}</pre>
+          <div className="flex items-center gap-3">
+            <button onClick={copy}
+              className="inline-flex items-center h-10 md:h-9 px-4 rounded-lg text-[13px] font-semibold text-white border border-white/10 hover:brightness-110 transition"
+              style={{ background: "linear-gradient(180deg,#9a8bff,#7c74ff)" }}>
+              {copied ? "copied ✓" : "copy curl"}
+            </button>
+            <span className="text-faint font-mono text-[11.5px]">text/plain body = raw Python · GET /api/health</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [code, setCode] = useState(EXAMPLES[0].code);
   const [files, setFiles] = useState<Files>(EXAMPLES[0].files ?? {});
@@ -28,6 +69,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [exampleName, setExampleName] = useState(EXAMPLES[0].name);
   const [mobileTab, setMobileTab] = useState<Tab>("code");
+  const [showAPI, setShowAPI] = useState(false);
   const [rev, setRev] = useState(1);
 
   const codeRef = useRef(code);
@@ -132,8 +174,13 @@ export function App() {
         <span className="font-mono font-semibold text-[15px]">pyex</span>
         <span className="hidden md:inline text-muted text-[12.5px]">— a Python&nbsp;3 interpreter <span className="text-fg">written in Elixir</span>, compiled to <span className="text-accent2">WebAssembly&nbsp;GC</span></span>
         <div className="flex-1" />
+        <button onClick={() => setShowAPI(true)}
+          className="inline-flex items-center gap-1.5 h-10 md:h-8 px-2.5 rounded-lg text-[12px] font-mono text-muted hover:text-fg hover:bg-surface2 border border-transparent hover:border-line transition">
+          <span className="w-[6px] h-[6px] rounded-full bg-accent2" />api
+        </button>
         <GH repo="pyex" /><GH repo="elixir_wasm" />
       </nav>
+      {showAPI && <APIPanel code={code} files={files} onClose={() => setShowAPI(false)} />}
 
       {/* toolbar */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line shrink-0">

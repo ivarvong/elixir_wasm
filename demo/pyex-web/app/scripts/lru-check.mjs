@@ -2,7 +2,9 @@
 // `def __init__(self, k=None, v=None)`) runs on the wasm currently served.
 import { chromium } from "playwright-core";
 
-const BASE = process.env.PYEX_URL || "http://localhost:5199/";
+// The playground lives at /play/ (the root is the marketing landing page).
+const ORIGIN = (process.env.PYEX_URL || "http://localhost:5199/").replace(/\/$/, "");
+const BASE = `${ORIGIN}/play/`;
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const EXPECTED = ["get(1) -> 1", "get(2) -> -1", "get(1) -> -1", "get(3) -> 3", "get(4) -> 4"];
 

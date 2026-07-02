@@ -34,6 +34,12 @@ const CORS = {
   "access-control-allow-headers": "content-type",
 };
 
+// Boot LAZILY on the first API request. Instantiating the 12 MB WasmGC module at
+// module scope exceeds workerd's startup budget and kills every worker-handled route
+// (tried; the deploy passed but all /api/* and /pyex.wasm requests died with no logs).
+// The cost of lazy boot: a cold isolate's first /api request pays instantiation +
+// builtins build, which can trip 1102 on tight CPU plans — clients should retry once;
+// the retry lands warm.
 let e = null;
 const enc = new TextEncoder();
 
