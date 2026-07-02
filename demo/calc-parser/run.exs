@@ -96,8 +96,11 @@ defmodule CalcDemo do
   end
 
   defp vm_parse(expr) do
+    # --no-compile: ensure_compiled!/0 already built the app; without it, a cold `mix run` prints a
+    # "==> <dep>" compile banner to stdout (the app depends on :beam2wasm) that pollutes the captured
+    # parse output and makes every case mismatch.
     {out, 0} =
-      System.cmd("mix", ["run", "-e", "IO.write(Calc.parse(hd(System.argv())))", expr],
+      System.cmd("mix", ["run", "--no-compile", "-e", "IO.write(Calc.parse(hd(System.argv())))", expr],
         cd: @app, env: [{"MIX_ENV", "dev"}])
 
     out

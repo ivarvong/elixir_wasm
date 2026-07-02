@@ -113,6 +113,9 @@ defmodule Beam2Wasm.Codegen.Common do
         else: "(ref.test (ref i31) #{vw})"
       )
 
+  def type_test_i32(:is_number, vw),
+    do: "(i32.or #{type_test_i32(:is_integer, vw)} #{type_test_i32(:is_float, vw)})"
+
   def type_test_i32(:is_list, vw), do: "(i32.or (ref.is_null #{vw}) (ref.test (ref $cons) #{vw}))"
 
   def type_test_i32(:is_boolean, vw),

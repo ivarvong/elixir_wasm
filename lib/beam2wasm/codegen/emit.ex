@@ -458,6 +458,7 @@ defmodule Beam2Wasm.Codegen.Emit do
                :is_float,
                :is_port,
                :is_integer,
+               :is_number,
                :is_list,
                :is_boolean
              ] ->
@@ -499,6 +500,9 @@ defmodule Beam2Wasm.Codegen.Emit do
                     "(i32.or (i32.or (ref.test (ref i31) #{val.(a)}) (ref.test (ref $i64) #{val.(a)})) (ref.test (ref $big) #{val.(a)}))",
                   else: "(ref.test (ref i31) #{val.(a)})"
                 )
+
+              :is_number ->
+                type_test_i32(:is_number, val.(a))
 
               :is_list ->
                 "(i32.or (ref.is_null #{val.(a)}) (ref.test (ref $cons) #{val.(a)}))"
@@ -828,6 +832,11 @@ defmodule Beam2Wasm.Codegen.Emit do
           {setup ++ lines, false}
 
         {:badmatch, _} ->
+          {["(unreachable)"], true}
+
+        # OTP 27+: a record field op on a non-matching tuple raises {badrecord, Tag}. Like badmatch,
+        # this is an error landing pad — unreached on the happy path — not an unsupported opcode.
+        {:badrecord, _} ->
           {["(unreachable)"], true}
 
         {:case_end, _} ->
@@ -1267,6 +1276,10 @@ defmodule Beam2Wasm.Codegen.Emit do
             end
 
           {["(local.set $fr#{n} (f64.#{o} #{frval.(a)} #{frval.(b)}))"], false}
+
+        # OTP 29: unary float minus (`-x` on a float) lowers to the fnegate float-register op.
+        {:bif, :fnegate, _f, [a], {:fr, n}} ->
+          {["(local.set $fr#{n} (f64.neg #{frval.(a)}))"], false}
 
         {:loop_rec, {:f, e}, dst} ->
           {["(if (i32.eqz (call $recv_has)) (then #{jump.(e)}))", set.(dst, "(call $recv_cur)")], false}
@@ -2401,8 +2414,13 @@ defmodule Beam2Wasm.Codegen.Emit do
   def build_map(src, kvs, val) do
     pairs = kvs |> Enum.chunk_every(2) |> Enum.map(fn [k, v] -> {k, v} end)
 
+    # The static fast path is ONLY valid when the source is the EMPTY map (we build the whole tree
+    # from `kvs` alone). NB: `%{}` as a *pattern* matches ANY map, so it must be guarded by
+    # `map_size == 0` — otherwise a non-empty literal source (OTP 29 emits `Map.put(%{a: 1}, …)` as
+    # `put_map_assoc {:literal, %{a: 1}}`) wrongly takes this path and DROPS the source's entries.
     static? =
-      match?({:literal, %{}}, src) and Enum.all?(pairs, fn {k, _} -> match?({:ok, _}, key_term(k)) end)
+      match?({:literal, m} when map_size(m) == 0, src) and
+        Enum.all?(pairs, fn {k, _} -> match?({:ok, _}, key_term(k)) end)
 
     if static? do
       ordered =

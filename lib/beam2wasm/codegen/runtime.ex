@@ -474,6 +474,11 @@ defmodule Beam2Wasm.Codegen.Runtime do
       # :elixir_config.get(key, default) — no config ETS in the sandbox → the default.
       "$elixir_config.get_2" =>
         "  (func $elixir_config.get_2 (param $key (ref null eq)) (param $default (ref null eq)) (result (ref null eq))\n    (local.get $default))",
+      # :elixir_config.identifier_tokenizer() — the atom-classification tokenizer module. Constant in
+      # the sandbox: the default, String.Tokenizer (fed as pure Elixir). Lets Macro.classify_atom (via
+      # Inspect.Atom) resolve, so inspecting an atom returns a value instead of trapping.
+      "$elixir_config.identifier_tokenizer_0" =>
+        "  (func $elixir_config.identifier_tokenizer_0 (result (ref null eq))\n    (global.get $atom_Elixir_46_String_46_Tokenizer))",
       # :os.type() — an OS query NIF. Constant in the sandbox; the :unix family is all that affects behavior.
       "$os.type_0" =>
         "  (func $os.type_0 (result (ref null eq))\n    (array.new_fixed $tuple 2 (global.get $atom_unix) (global.get $atom_linux)))",
@@ -538,6 +543,73 @@ defmodule Beam2Wasm.Codegen.Runtime do
       "$Elixir_46_Code.ensure_compiled_1" => """
         (func $Elixir_46_Code.ensure_compiled_1 (param $m (ref null eq)) (result (ref null eq))
           (array.new_fixed $tuple 2 (global.get $atom_module) (local.get $m)))\
+      """,
+      # Task.yield/shutdown — identity. In the synchronous sandbox the "task" already carries its result
+      # (see the gated $Elixir_46_Task.async_1 below), so yield returns it (truthy → {:ok, result}) and
+      # shutdown is a no-op. (async_1 is gated separately: it calls a closure via $ftab, which only
+      # exists when the program has closures.)
+      "$Elixir_46_Task.yield_2" => """
+        (func $Elixir_46_Task.yield_2 (param $task (ref null eq)) (param $timeout (ref null eq)) (result (ref null eq))
+          (local.get $task))\
+      """,
+      "$Elixir_46_Task.shutdown_2" => """
+        (func $Elixir_46_Task.shutdown_2 (param $task (ref null eq)) (param $how (ref null eq)) (result (ref null eq))
+          (local.get $task))\
+      """,
+      # Code.ensure_loaded?(Module) -> true. Closed world: any module referenced here IS shipped.
+      # (Pyex.Stdlib.fetch/1 gates every `import` on this + function_exported?/3; a `false` here would
+      # make EVERY guest import fail.)
+      "$Elixir_46_Code.ensure_loaded_63__1" => """
+        (func $Elixir_46_Code.ensure_loaded_63__1 (param $m (ref null eq)) (result (ref null eq))
+          (global.get $atom_true))\
+      """,
+# :rand snapshot/restore — a turn snapshots the caller's PRNG state (export_seed/0) and reseeds
+      # (seed/1,2), restoring afterward so randomness never leaks between turns. With process-local
+      # entropy modeled as inert here, the snapshot is nil and reseeds are no-ops: correct for any
+      # program that doesn't draw randomness. (Actual `random.*` needs a faithful exsss PRNG shim —
+      # not yet built; such a draw would trap on :rand.uniform rather than silently diverge.)
+      "$rand.export_seed_0" => """
+        (func $rand.export_seed_0 (result (ref null eq)) (global.get $atom_nil))\
+      """,
+      "$rand.seed_1" => """
+        (func $rand.seed_1 (param $a (ref null eq)) (result (ref null eq)) (global.get $atom_nil))\
+      """,
+      "$rand.seed_2" => """
+        (func $rand.seed_2 (param $a (ref null eq)) (param $b (ref null eq)) (result (ref null eq)) (global.get $atom_nil))\
+      """,
+      # :telemetry.execute/3 — dispatches an event to attached handlers. Our closed, single-turn
+      # world attaches none, so it is a no-op: return :ok without touching the (absent) handler ETS
+      # table. Shimming here keeps the real `telemetry` app (ETS + process machinery) out of the graph.
+      "$telemetry.execute_3" => """
+        (func $telemetry.execute_3 (param $ev (ref null eq)) (param $meas (ref null eq)) (param $meta (ref null eq)) (result (ref null eq))
+          (global.get $atom_ok))\
+      """,
+      # :telemetry.span/3 — runs the 0-arg span function (which returns {result, stop_meta}), emitting
+      # start/stop events around it; with no handlers attached the events are no-ops, so we just invoke
+      # the closure and return its `result`. pyex wraps FS ops in this. (clos0 = self-only closure; $ftab
+      # exists whenever closures do, which pyex always has.)
+      # Gated on process-mode: $ftab + $clos0 (the closure-call machinery) are only in the module then
+      # — and telemetry.span is only reached by pyex, which is always process-mode. builtins() is emitted
+      # WHOLESALE, so a non-proc module must get the type-free stub or wasm-as fails ("unknown type $clos0").
+      "$telemetry.span_3" =>
+        if(Process.get(:proc),
+          do: """
+            (func $telemetry.span_3 (param $prefix (ref null eq)) (param $meta (ref null eq)) (param $fun (ref null eq)) (result (ref null eq))
+              (local $r (ref null eq))
+              (local.set $r (call_indirect $ftab (type $clos0) (local.get $fun) (struct.get $fun 0 (ref.cast (ref $fun) (local.get $fun)))))
+              (array.get $tuple (ref.cast (ref $tuple) (local.get $r)) (i32.const 0)))\
+          """,
+          else: "  (func $telemetry.span_3 (param (ref null eq)) (param (ref null eq)) (param (ref null eq)) (result (ref null eq)) (unreachable))"
+        ),
+      # :re.import/1 — OTP 28+ Regex literals store the compiled pattern as an "exported"
+      # (serializable) form; at the ~r call site Elixir materializes it with :re.import/1 to
+      # populate the %Regex{}.re_pattern field. Our Regex.run/scan/split builtins run from the
+      # struct's `source` and never read re_pattern, so the imported value is inert — identity is
+      # a faithful shim (the host regex engine always recompiles from source). See beam2wasm.ex
+      # regex_run? and $regex_src.
+      "$re.import_1" => """
+        (func $re.import_1 (param $p (ref null eq)) (result (ref null eq))
+          (local.get $p))\
       """,
       # read a 64-bit big-endian IEEE-754 double from $bytes at byte offset $off (bs_get_float2, default flags)
       "$read_f64_be" => """
@@ -918,6 +990,17 @@ defmodule Beam2Wasm.Codegen.Runtime do
           """,
           else: "  (func $file.read_file_1 (param $p (ref null eq)) (result (ref null eq)) (unreachable))"
         ),
+# :os.system_time/0 — native-unit wall clock from the host (DateTime.utc_now et al.). The host `sys.now`
+      # returns i64 nanoseconds; hand it back as an integer term. Only wired when reachable (import gated).
+      "$os.system_time_0" =>
+        if(Process.get(:os_systime),
+          do: "  (func $os.system_time_0 (result (ref null eq)) (call $narrow (call $host_sys_now)))",
+          else: "  (func $os.system_time_0 (result (ref null eq)) (unreachable))"
+        ),
+      # OTP 29: File.read/1 lowers to :file.read_file/2 (path, opts). Options don't affect the
+      # bytes returned by our host VFS, so drop them and reuse the /1 body.
+      "$file.read_file_2" =>
+        "  (func $file.read_file_2 (param $p (ref null eq)) (param $_opts (ref null eq)) (result (ref null eq)) (return_call $file.read_file_1 (local.get $p)))",
       "$file.write_file_2" =>
         if(Process.get(:fs_shim),
           do: """
@@ -1396,9 +1479,12 @@ defmodule Beam2Wasm.Codegen.Runtime do
       """,
       # Optional callback checks (e.g. GenServer terminate/2). We do not expose a dynamic code server;
       # absent callbacks are reported as not exported.
+      # function_exported?(M, F, A) -> true. Closed world: every function referenced here IS compiled
+      # in, so "is it exported" is true. (Returning false here made Pyex.Stdlib.fetch/1 —
+      # `ensure_loaded?(m) and function_exported?(m, :module_value, 0)` — reject EVERY guest import.)
       "$erlang.function_exported_3" => """
         (func $erlang.function_exported_3 (param $m (ref null eq)) (param $f (ref null eq)) (param $a (ref null eq)) (result (ref null eq))
-          (global.get $atom_false))\
+          (global.get $atom_true))\
       """,
       "$erlang.exit_1" =>
         if(Process.get(:exc),
@@ -1806,6 +1892,21 @@ defmodule Beam2Wasm.Codegen.Runtime do
     }
 
     # maps:fold/3 needs $clos3 + the $ftab table, so emit it only when the program uses it.
+    # Task.async/1 runs the 0-arity closure SYNCHRONOUSLY (the sandbox is single-threaded + step-bounded,
+    # so pyex's Task-based ReDoS guard collapses to a direct call) and returns {:ok, result}. Gated like
+    # maps.fold: it dispatches through $ftab/$clos0, which only exist when the program has closures.
+    base =
+      if Process.get(:task) do
+        Map.put(base, "$Elixir_46_Task.async_1", """
+          (func $Elixir_46_Task.async_1 (param $fun (ref null eq)) (result (ref null eq))
+            (array.new_fixed $tuple 2 (global.get $atom_ok)
+              (call_indirect $ftab (type $clos0) (local.get $fun)
+                (struct.get $fun 0 (ref.cast (ref $fun) (local.get $fun))))))\
+        """)
+      else
+        base
+      end
+
     base =
       if Process.get(:mapsfold) do
         Map.put(base, "$maps.fold_3", """

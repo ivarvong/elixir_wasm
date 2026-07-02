@@ -15,6 +15,7 @@ const DEBUG = process.env.SCHED_DEBUG === "1";
 const procs = new Map();   // pid -> {fn?, mailbox, cursor, status, resolve, reject}
 const registry = new Map();// name-atom-index -> pid (named processes)
 const monitors = [];       // {by, target, ref} — `by` gets {:DOWN, ref, :process, target, reason}
+const timerTable = new Map(); // erlang:start_timer id -> setTimeout handle (for cancel_timer)
 let nextPid = 2;           // main process is pid 1
 let nextRef = 1;
 let current = 0;
@@ -45,7 +46,7 @@ const imports = {
     spawn_link: (fn) => { const pid = nextPid++; procs.set(pid, newProc({ fn })); procs.get(pid).links.add(current); P().links.add(pid); enqStart(pid); return pid; },
     // spawn a process running apply(M,F,Args); optionally bidirectionally link to the spawner.
     spawn_opt: (m, f, a, link) => {
-      const pid = nextPid++; procs.set(pid, newProc({ mfa: [m, f, a] }));
+      const pid = nextPid++; if(process.env.SCHED_DEBUG)console.error("[sched] spawn_opt pid="+pid+" by="+current); procs.set(pid, newProc({ mfa: [m, f, a] }));
       if (link) { procs.get(pid).links.add(current); P().links.add(pid); }
       enqStart(pid); return pid;
     },
@@ -56,12 +57,32 @@ const imports = {
     // exit(pid, reason): signal another process. A parked target is unwound (kill-by-unwind); a
     // trapping target instead receives {:EXIT, from, reason}. :normal to another process is a no-op.
     exit2: (pid, reason) => { signal_exit(pid, reason); return 1; },
-    register: (nameIdx, pid) => { registry.set(nameIdx, pid); },
+    register: (nameIdx, pid) => {  if(process.env.SCHED_DEBUG)console.error("[sched] register name="+nameIdx+" pid="+pid);registry.set(nameIdx, pid); },
     whereis: (nameIdx) => registry.get(nameIdx) ?? 0,            // 0 -> no process (send no-ops)
     monitor: (pid) => { const ref = nextRef++; monitors.push({ by: current, target: pid, ref }); return ref; },
     demonitor: (ref) => { for (let i = monitors.length - 1; i >= 0; i--) if (monitors[i].ref === ref) monitors.splice(i, 1); },
     // a monitor ref doubles as a reply alias (gen:call): sending to it delivers to the monitor owner.
     alias_pid: (ref) => { const m = monitors.find(m => m.ref === ref); return m ? m.by : 0; },
+    // erlang:start_timer(Time, DestPid, Msg): after Time ms, deliver {:timeout, TimerRef, Msg} to Dest.
+    // Returns the timer-ref id. Used by OTP 29 gen:call for its timeout; normally cancelled on reply.
+    start_timer: (ms, destPid, msg) => {
+      const id = nextRef++;
+      pendingTimers++;
+      const t = setTimeout(() => {
+        timerTable.delete(id); pendingTimers--;
+        const p = procs.get(destPid);
+        if (p && !p.dead) { p.mailbox.push(makeTimeout(id, msg)); wake(destPid); }
+      }, Number(ms));
+      timerTable.set(id, t);
+      return id;
+    },
+    // cancel_timer(id) -> remaining ms (>=0) if still pending, or -1 if it had already fired/unknown.
+    cancel_timer: (id) => {
+      const t = timerTable.get(id);
+      if (t === undefined) return -1;
+      clearTimeout(t); timerTable.delete(id); pendingTimers--;
+      return 0;
+    },
     recv_has: () => (P().cursor < P().mailbox.length ? 1 : 0),
     recv_cur: () => P().mailbox[P().cursor],
     recv_remove: () => { const p = P(); p.mailbox.splice(p.cursor, 1); p.cursor = 0; },
@@ -108,6 +129,7 @@ const startProcess = WebAssembly.promising(instance.exports.start_process);
 const startMfa = instance.exports.start_mfa && WebAssembly.promising(instance.exports.start_mfa);
 const runEntry = WebAssembly.promising(instance.exports[entry]);
 const setReds = instance.exports.set_reds;
+const makeTimeout = instance.exports.make_timeout; // build {:timeout, TimerRef, Msg} for a fired timer
 const makeExit = instance.exports.make_exit;     // build {:EXIT, pid, reason} (atoms live in Wasm)
 const makeDown = instance.exports.make_down;     // build {:DOWN, ref, :process, pid, reason}
 const getNormal = instance.exports.get_normal;   // the :normal atom
@@ -151,6 +173,7 @@ function signal_exit(pid, reason) {
 // non-trapping one is killed too if the exit was abnormal (propagation).
 function finish(pid, normal) {
   const p = procs.get(pid); if (!p || p.dead) return; p.dead = true; p.status = "done";
+  if (process.env.SCHED_DEBUG) console.error(`[sched] finish pid=${pid} normal=${normal} abnormal=${p.abnormal} links=[${[...p.links]}]`);
   unwindParked(p);                                  // free an engine-rooted suspended stack, don't abandon it
   for (const [name, registeredPid] of registry) if (registeredPid === pid) registry.delete(name);
   const reasonRef = (p.exitReason != null) ? p.exitReason : getNormal();
@@ -189,7 +212,11 @@ function finish(pid, normal) {
 function startChild(pid) {
   const p = procs.get(pid); if (!p || p.dead) return; current = pid; p.status = "running"; fresh();
   const run = p.mfa ? startMfa(p.mfa[0], p.mfa[1], p.mfa[2]) : startProcess(p.fn);
-  run.then(() => finish(pid, true), () => finish(pid, false));
+  run.then(() => finish(pid, true), (e) => {
+    if (process.env.SCHED_DEBUG && !(e instanceof ProcExit) && !(e instanceof ProcKill))
+      console.error(`[sched] pid=${pid} THREW: ${(e && e.stack) ? e.stack.split("\n").slice(0,4).join(" | ") : e}`);
+    finish(pid, false);
+  });
 }
 function resume(pid) {
   const p = procs.get(pid); if (!p || p.dead) return;   // killed while queued -> skip the dispatch
@@ -211,7 +238,13 @@ async function main() {
     else if (pendingTimers > 0) await new Promise((r) => setTimeout(r, 0));  // idle: let a receive-after timer fire
     else break;                             // truly nothing left to do
   }
-  if (!mainDone) { console.error("DEADLOCK (no runnable processes, main not done)"); process.exit(2); }
+  if (!mainDone) {
+    if (process.env.SCHED_DEBUG) {
+      for (const [pid, p] of procs) console.error(`  proc ${pid}: status=${p.status} dead=${p.dead} links=${[...(p.links||[])]}`);
+      console.error(`  monitors: ${JSON.stringify(monitors)}`);
+    }
+    console.error("DEADLOCK (no runnable processes, main not done)"); process.exit(2);
+  }
   if (DEBUG) console.error(`[sched] ${dispatches} dispatches`);
   // Optional leak check (run with `node --expose-gc` and SCHED_MEM=1): after the run, GC and report
   // live heap + lingering process records. With kill-by-unwind + record cleanup this stays flat as the

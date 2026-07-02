@@ -1,10 +1,11 @@
 Elixir.Protocol.UndefinedError.exception/1	20
-Elixir.ArgumentError.exception/1	19
-Elixir.Kernel.inspect/1	19
 elixir_erl_pass.no_parens_remote/2	18
 erlang.phash/2	18
+Elixir.ArgumentError.exception/1	17
+Elixir.Kernel.inspect/1	17
 Elixir.Enum.EmptyError.exception/1	14
 Dict.update/4	6
+Elixir.IO.warn_once/3	6
 Elixir.List.-inlined-last/2-/2	3
 Elixir.UnicodeConversionError.exception/1	2
 Elixir.KeyError.exception/1	1

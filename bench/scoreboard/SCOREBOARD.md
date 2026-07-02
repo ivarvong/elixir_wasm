@@ -5,24 +5,24 @@ concrete call is generated from a typed input pool (VM-validated); the SAME call
 on WasmGC and on the Elixir VM, results folded through an identical checksum and diffed.
 `nogen` = no candidate input matched yet (a harness gap, not a runtime failure).
 
-**TOTAL: 487/487 bit-exact (100.0%) · 79 not yet generated · 566 public functions**
+**TOTAL: 496/496 bit-exact (100.0%) · 82 not yet generated · 578 public functions**
 
 | Module | bit-exact | nogen | public fns | failing |
 |--------|-----------|-------|------------|---------|
-| Enum | 109/109 | 3 | 112 |  |
-| List | 42/42 | 0 | 42 |  |
+| Enum | 112/112 | 4 | 116 |  |
+| List | 45/45 | 0 | 45 |  |
 | Map | 42/42 | 0 | 42 |  |
-| Keyword | 50/50 | 0 | 50 |  |
+| Keyword | 49/49 | 1 | 50 |  |
 | Tuple | 7/7 | 0 | 7 |  |
-| Integer | 17/17 | 0 | 17 |  |
-| String | 76/76 | 0 | 76 |  |
+| Integer | 19/19 | 0 | 19 |  |
+| String | 77/77 | 0 | 77 |  |
 | Range | 10/10 | 0 | 10 |  |
 | MapSet | 20/20 | 0 | 20 |  |
 | Float | 16/16 | 0 | 16 |  |
 | Atom | 3/3 | 0 | 3 |  |
 | Bitwise | 12/12 | 0 | 12 |  |
-| Access | 13/13 | 3 | 16 |  |
+| Access | 14/14 | 3 | 17 |  |
 | Function | 1/1 | 3 | 4 |  |
 | Date | 30/30 | 20 | 50 |  |
-| Time | 19/19 | 21 | 40 |  |
+| Time | 19/19 | 22 | 41 |  |
 | NaiveDateTime | 20/20 | 29 | 49 |  |

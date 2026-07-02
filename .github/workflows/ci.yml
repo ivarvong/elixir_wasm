@@ -5,62 +5,61 @@ on:
     branches: [main, oss-release-prep]
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly 07:00 UTC: the full toolchain matrix + the full manifest + deep generative fuzzing
+    # with a rotating seed. This is what catches OTP/Elixir-version codegen drift over time — every
+    # bug in the 1.20/OTP29 port (map-literal miscompile, gen:call timers, fnegate, …) was a toolchain
+    # delta, and the fuzzer with a fresh seed each night explores 100 new programs across every cell.
+    - cron: "0 7 * * *"
 
 permissions:
   contents: read
 
 jobs:
-  # Fast gate: formatting, linting, and the package's own ExUnit suite. Pure-Elixir,
-  # no exotic toolchain — this is the gate that must always be green.
+  # ── Fast gate: format, lint, ExUnit, dialyzer on the primary toolchain. Must always be green. ──
   lint-test:
-    name: format · credo · mix test
+    name: format · credo · test · dialyzer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Erlang/Elixir
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.0"
-          elixir-version: "1.17.1-otp-27"
-
-      - name: Cache deps & build
-        uses: actions/cache@v4
+          otp-version: "29.0.2"
+          elixir-version: "1.20.2-otp-29"
+      - uses: actions/cache@v4
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
-          restore-keys: ${{ runner.os }}-mix-
-
+          key: ${{ runner.os }}-otp29-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-otp29-mix-
       - run: mix deps.get
       - run: mix format --check-formatted
       - run: mix credo
       - run: mix test
-      # Dialyzer: PLT is built into _build (cached above); first cold run ~1 min.
       - run: mix dialyzer
 
-  # Differential gate: the real proof — every suite run bit-exact against the Elixir VM.
-  # `verify.exs fast` runs the 6 suites that need only Node 24 + Binaryen (conformance,
-  # fuzz, gaps, genfuzz, regexdiff, effects); the workerd-backed suites (scoreboard,
-  # markdown) are gated separately. See verify.exs and BUILD.md.
+  # ── PR/push gate: the differential manifest (fast subset) on the two toolchain corners. The
+  #    compiler consumes BEAM bytecode, which changes most across OTP majors — so we prove the
+  #    oldest supported (1.17/OTP27) and the newest (1.20/OTP29) on every change. ~2 min each. ──
   verify:
-    name: verify.exs (differential vs the VM)
+    name: verify (fast) · ${{ matrix.elixir }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { elixir: "1.17.1-otp-27", otp: "27.0" }
+          - { elixir: "1.20.2-otp-29", otp: "29.0.2" }
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Erlang/Elixir
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.0"
-          elixir-version: "1.17.1-otp-27"
-
-      - name: Set up Node.js 24 (JSPI + WasmGC)
-        uses: actions/setup-node@v4
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - uses: actions/setup-node@v4
         with:
           node-version: "24.16.0"
-
       - name: Install Binaryen (wasm-as) version_130
         run: |
           set -euo pipefail
@@ -69,12 +68,46 @@ jobs:
           tar xzf binaryen.tar.gz
           echo "WASM_AS=$GITHUB_WORKSPACE/binaryen-version_130/bin/wasm-as" >> "$GITHUB_ENV"
           echo "NODE=$(command -v node)" >> "$GITHUB_ENV"
-
-      - name: Verify toolchain
-        run: |
-          node --version
-          "$WASM_AS" --version
-          elixir --version
-
-      - name: Run the differential manifest
+      - run: mix deps.get
+      - name: Differential manifest (fast) vs the Elixir VM
         run: elixir verify.exs fast
+
+  # ── Nightly only: the FULL supported {elixir, otp} diagonal × the FULL manifest (adds the
+  #    workerd-scale suites: scoreboard, markdown, calc-parser) + deep generative fuzzing
+  #    (PROGS=100, seed rotates per run so each night explores fresh programs; failures print the
+  #    GENSEED for a one-line repro). fail-fast:false so one cell's break doesn't hide the others. ──
+  verify-matrix:
+    name: verify (full) · ${{ matrix.elixir }}
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { elixir: "1.17.1-otp-27", otp: "27.0" }
+          - { elixir: "1.18.3-otp-27", otp: "27.3" }
+          - { elixir: "1.19.5-otp-28", otp: "28.1" }
+          - { elixir: "1.20.2-otp-29", otp: "29.0.2" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: Install Binaryen (wasm-as) version_130
+        run: |
+          set -euo pipefail
+          curl -fsSL -o binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz
+          tar xzf binaryen.tar.gz
+          echo "WASM_AS=$GITHUB_WORKSPACE/binaryen-version_130/bin/wasm-as" >> "$GITHUB_ENV"
+          echo "NODE=$(command -v node)" >> "$GITHUB_ENV"
+      - run: mix deps.get
+      - name: Full differential manifest + deep fuzz (PROGS=100, rotating seed)
+        env:
+          PROGS: "100"
+          GENSEED: ${{ github.run_number }}
+        run: elixir verify.exs

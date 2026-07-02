@@ -27,7 +27,7 @@ defmodule Verify do
     {"gaps", "bench/gaps", [], ~r/20\/20 programs PROVABLY CORRECT/, false},
     {"genfuzz", "bench/genfuzz", [], ~r/12\/12 programs bit-exact/, false},
     {"regexdiff", "bench/regexdiff", [], ~r/0 LIES/, false},
-    {"scoreboard", "bench/scoreboard", [], ~r/487\/487 bit-exact \(100\.0%\)/, true},
+    {"scoreboard", "bench/scoreboard", [], ~r/496\/496 bit-exact \(100\.0%\)/, true},
     {"markdown", "demo/markdown", [], ~r/3\/3 pages BYTE-IDENTICAL/, true},
     {"calc-parser", "demo/calc-parser", [], ~r/13\/13 expressions BYTE-IDENTICAL/, true},
     {"effects", "demo/effects", [], ~r/byte-identical to the VM/, false}

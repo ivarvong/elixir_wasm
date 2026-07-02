@@ -51,7 +51,7 @@ defmodule MdDemo do
     # Include protocol IMPL modules (Enumerable.List etc.) so the dynamic apply dispatch in the consolidated
     # protocols has real targets to call.
     [Kernel, Exception, Enum, String, String.Break, String.Chars, List, Map, MapSet, Keyword, Integer, Float,
-     Tuple, Range, Stream, Enumerable, Collectable, Inspect, Inspect.Algebra, Access,
+     Tuple, Range, Stream, Stream.Reducers, Enumerable, Collectable, Inspect, Inspect.Algebra, Access,
      ArgumentError, RuntimeError, KeyError, :lists, :maps, :sets, :ordsets, :gb_sets, :erl_scan, :erl_anno, :proplists, :orddict, :string, :io_lib, :io_lib_format, :io_lib_pretty,
      Enumerable.List, Enumerable.Map, Enumerable.Range, Enumerable.MapSet, Enumerable.Function, Enumerable.Stream,
      Collectable.List, Collectable.Map, Collectable.MapSet, Collectable.BitString,
@@ -95,7 +95,9 @@ defmodule MdDemo do
   end
 
   defp vm_render(seed) do
-    {out, 0} = System.cmd("mix", ["run", "-e", "IO.write(Blog.render(#{seed}))"], cd: @app, env: [{"MIX_ENV", "dev"}])
+    # --no-compile: the app is already built above; without it a cold `mix run` prints a "==> <dep>"
+    # compile banner (the app depends on :beam2wasm) into the captured HTML, failing every diff.
+    {out, 0} = System.cmd("mix", ["run", "--no-compile", "-e", "IO.write(Blog.render(#{seed}))"], cd: @app, env: [{"MIX_ENV", "dev"}])
     out
   end
 

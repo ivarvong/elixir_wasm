@@ -570,6 +570,12 @@ export const makeIo = (getExports, sink = null) => {
 // Benign proc/sched stubs for runners that keep GenServer/Finch code alive via DCE but never
 // execute it (the demo overrides the transport adapter). The REAL scheduler lives in
 // runtime/scheduler.mjs; do not use these there.
+// Wall clock as a host effect: :os.system_time/0 -> nanoseconds since the epoch (i64). Deterministic
+// alternative: pass a fixed `nowNs` for reproducible turns (agent replay).
+export const makeSys = (nowNs = null) => ({
+  now: () => (nowNs != null ? BigInt(nowNs) : BigInt(Date.now()) * 1_000_000n),
+});
+
 export const makeProcStubs = () => {
   const pdict = new Map();
   const proc = {
@@ -578,6 +584,9 @@ export const makeProcStubs = () => {
     recv_has: () => 0, recv_cur: () => null, recv_remove: () => {}, recv_advance: () => {}, recv_wait: () => {}, recv_wait_timeout: () => 0,
     exit: () => {}, exit2: () => {}, set_trap_exit: () => {}, register: () => {}, whereis: () => 0,
     monitor: () => 1, demonitor: () => {}, alias_pid: (p) => p,
+    // OTP 29 gen:call timeout timers. In these single-shot stub contexts nothing fires, so a timer is
+    // inert: start returns a ref id, cancel is a no-op. (The real firing lives in scheduler.mjs.)
+    start_timer: () => 999, cancel_timer: () => 0,
     pdict_get: (k) => (pdict.has(k) ? pdict.get(k) : null),
     pdict_put: (k, v) => { const old = pdict.has(k) ? pdict.get(k) : null; pdict.set(k, v); return old; },
   };
